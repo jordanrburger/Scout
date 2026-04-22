@@ -8,11 +8,22 @@ Scout is an autonomous knowledge-management and daily-briefing system that runs 
 - **Action Items** — today's to-do list rendered from the daily markdown file, with inline comments and deep links to Linear / GitHub PRs / Slack threads.
 - **Schedules** — full CRUD on the `com.scout.*.plist` launchd agents: edit fire times, add a new schedule, pause or remove existing ones. Saves to both the live copy in `~/Library/LaunchAgents/` and the repo copy in `~/Scout/launchd/`, reloads via `launchctl`, and commits the repo change.
 
-## Requirements
+## Install (prebuilt DMG)
+
+The fastest path if you just want to run the app:
+
+1. Go to the [Releases](https://github.com/jordanrburger/Scout/releases) page and download the latest `Scout-*.dmg`.
+2. Open the DMG and drag **Scout.app** into the **Applications** folder.
+3. First launch only: macOS will refuse because the build is ad-hoc signed (no paid Apple Developer cert). Right-click **Scout.app** in `/Applications` → **Open** → **Open**. After that it launches normally.
+4. Press ⌘, to open Settings and fill in your Linear workspace and author name.
+
+The app expects a Scout instance at `~/Scout/`. Install the [scout-plugin](https://github.com/jordanrburger/scout-plugin) into Claude Code and run `/scout-setup` first if you don't have one yet.
+
+## Requirements (for building from source)
 
 - macOS 13 (Ventura) or newer.
 - Xcode 15 or newer (for build + codesign).
-- An existing Scout instance at `~/Scout/` — install via `claude plugin add <scout-plugin-repo>` and run `/scout-setup` first.
+- An existing Scout instance at `~/Scout/`.
 
 ## Build & run
 
@@ -67,6 +78,16 @@ xcodebuild test -scheme Scout -destination 'platform=macOS' \
 ```
 
 The `ScoutTests/Fixtures/` directory holds synthetic plists, logs, and action-items files used by the suite. Nothing in them references a real person or incident.
+
+## Cutting a release
+
+Maintainers: `scripts/release.sh <version>` builds a universal (arm64+x86_64) ad-hoc-signed DMG, tags `v<version>`, pushes the tag, and creates a GitHub Release with the DMG attached. Example:
+
+```bash
+scripts/release.sh 0.2.0
+```
+
+Set `SKIP_RELEASE=1` to build the DMG locally without tagging or uploading.
 
 ## Relationship to the plugin
 

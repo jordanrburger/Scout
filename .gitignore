@@ -10,6 +10,7 @@ xcuserdata/
 project.xcworkspace/
 DerivedData/
 build/
+*.dmg
 
 # Swift Package Manager
 .build/

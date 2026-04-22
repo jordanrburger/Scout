@@ -10,32 +10,91 @@ struct TaskActionsView: View {
     let onOp: (WriteOp) async -> Void
 
     @State private var showingSnooze = false
+    @State private var launchError: String?
 
     var body: some View {
-        HStack(spacing: 4) {
-            if task.done {
-                actButton("Reopen", systemImage: "arrow.uturn.backward", style: .plain) {
-                    Task { await onOp(.reopen(subject: task.plainSubject)) }
-                }
-            } else {
-                actButton("Done", systemImage: "checkmark", style: .primary, shortcut: "⌘↵") {
-                    Task { await onOp(.markDone(subject: task.plainSubject)) }
-                }
-                actButton("Snooze", systemImage: "moon.zzz", style: .plain) {
-                    showingSnooze = true
-                }
-                .popover(isPresented: $showingSnooze) {
-                    SnoozePopoverView(sourceDate: displayedDate) { target in
-                        await onOp(.snooze(subject: task.plainSubject, until: target))
-                        showingSnooze = false
-                    } onCancel: {
-                        showingSnooze = false
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 4) {
+                if task.done {
+                    actButton("Reopen", systemImage: "arrow.uturn.backward", style: .plain) {
+                        Task { await onOp(.reopen(subject: task.plainSubject)) }
                     }
-                }
-                actButton("Launch Claude", systemImage: "sparkles", style: .plain) {
-                    launchClaude()
+                } else {
+                    actButton("Done", systemImage: "checkmark", style: .primary, shortcut: "⌘↵") {
+                        Task { await onOp(.markDone(subject: task.plainSubject)) }
+                    }
+                    actButton("Snooze", systemImage: "moon.zzz", style: .plain) {
+                        showingSnooze = true
+                    }
+                    .popover(isPresented: $showingSnooze) {
+                        SnoozePopoverView(sourceDate: displayedDate) { target in
+                            await onOp(.snooze(subject: task.plainSubject, until: target))
+                            showingSnooze = false
+                        } onCancel: {
+                            showingSnooze = false
+                        }
+                    }
+                    launchClaudeMenu
                 }
             }
+            if let launchError {
+                Text(launchError)
+                    .font(DS.sans(11))
+                    .foregroundStyle(DS.Status.err)
+            }
+        }
+    }
+
+    // MARK: - Launch Claude menu
+
+    private var launchClaudeMenu: some View {
+        Menu {
+            Button {
+                launch(.ghostty(cwd: scoutDirectory))
+            } label: {
+                Label("Ghostty → tmux + Claude Code", systemImage: "terminal")
+            }
+            Divider()
+            Button {
+                launch(.claudeDesktop(.chat))
+            } label: {
+                Label("Claude Desktop — new Chat", systemImage: "bubble.left.and.bubble.right")
+            }
+            Button {
+                launch(.claudeDesktop(.cowork))
+            } label: {
+                Label("Claude Desktop — new Cowork task", systemImage: "person.2")
+            }
+        } label: {
+            HStack(spacing: 5) {
+                Image(systemName: "sparkles")
+                    .font(.system(size: 10))
+                Text("Launch Claude")
+                    .font(DS.sans(11.5, weight: .medium))
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 8))
+                    .foregroundStyle(DS.Ink.p4)
+                    .padding(.leading, 1)
+            }
+            .foregroundStyle(DS.Ink.p3)
+            .padding(.horizontal, 10)
+            .frame(height: 24)
+            .contentShape(Rectangle())
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .onHover { hovering in
+            if hovering { NSCursor.pointingHand.push() } else { NSCursor.pop() }
+        }
+    }
+
+    private func launch(_ target: ClaudeLauncher.Target) {
+        do {
+            try ClaudeLauncher.launch(target: target, prompt: ClaudeLauncher.prompt(for: task))
+            launchError = nil
+        } catch {
+            launchError = error.localizedDescription
         }
     }
 

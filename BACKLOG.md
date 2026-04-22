@@ -9,6 +9,19 @@ nice-to-haves.
 ## Shipped
 
 ### 2026-04-22
+- **Launch Claude — split menu with Ghostty/tmux, Claude Desktop Chat, and
+  Claude Desktop Cowork.** The old single "Launch Claude" button drove an
+  AppleScript that pressed ⌘T and typed into Ghostty, which quietly failed
+  whenever Accessibility permission wasn't granted to the current bundle
+  ID. Rewritten as a Menu with three targets. The Ghostty path detects a
+  running tmux server (via `tmux list-sessions` against `/tmp/tmux-$UID/
+  default`, since macOS GUI apps get a different TMPDIR) and spawns a new
+  tmux window with `claude` in the Scout directory — the only reliable way
+  to get a fresh terminal surface when Ghostty's macOS config sets
+  `command = tmux new-session -A`. Claude Desktop paths open
+  `claude://claude.ai/new?q=…` or `claude://cowork/new?q=…`. The full
+  action-item context (subject + body + prior comments + deep-link URLs)
+  is copied to the clipboard on every launch as a reliable ⌘V fallback.
 - **Schedules tab.** Full CRUD on `com.scout.*.plist` files from within
   Scout.app — edit times, add new schedules (including the long-missing
   research cadence), delete unwanted ones. Saving writes both the live copy
@@ -41,6 +54,25 @@ nice-to-haves.
   when it carries in.
 
 ### Nice-to-have
+- **Launch Claude — broader terminal + shell support.** Today the Ghostty
+  path requires the exact setup it was written against: Ghostty.app, tmux
+  running at `/tmp/tmux-$UID/default`, and a session to attach to (the
+  launcher falls back to `open -na Ghostty.app --args --command=…` for
+  users without tmux, but the tmux path is what's actually been tested).
+  Expand to: (a) iTerm2 (has a mature AppleScript dictionary — `tell app
+  "iTerm" to create window with default profile`); (b) Terminal.app via a
+  `.command` file drop (most reliable baseline for users with nothing
+  else); (c) kitty (`kitty --single-instance --title=… holdtty=yes`); (d)
+  non-tmux Ghostty users on macOS (verify the `--command=` fallback
+  actually renders a fresh window when the primary Ghostty instance
+  hasn't set a `command = tmux …` override). Probably wants a
+  preferences dropdown: *"Launch Claude Code in: Ghostty+tmux / Ghostty /
+  iTerm2 / Terminal"* rather than auto-detection.
+- **Task-relevant cwd for Launch Claude.** Currently every Ghostty launch
+  opens in `~/Scout`. If the task's deep links include a GitHub PR URL
+  (e.g. `github.com/acme/mcp-server/pull/42`), we could try common clone
+  locations (`~/<repo>`, `~/code/<repo>`, `~/src/<repo>`) and cd there
+  instead. Falls back to `~/Scout` when nothing matches.
 - **Keyboard navigation.** Arrow keys to move focus between cards; Enter to
   open the composer on the focused card.
 - **Bulk actions.** Multi-select cards → mark done / snooze all together.
@@ -146,11 +178,6 @@ render onto.
   and the Obsidian workflow easier to spot.
 
 ## Known paper cuts
-- **Accessibility permission prompt for Launch Claude.** The launcher relies
-  on AppleScript keystrokes into Ghostty, which needs Scout to be in
-  *System Settings → Privacy & Security → Accessibility*. We don't proactively
-  request or surface that today; if the permission is denied, the button
-  silently does nothing.
 - **Env banner copy drift.** The "missing: …" banner line lists scripts by
   filename; if the set of required CLIs changes, we need to keep the banner
   and ``ActionItemsEnvironmentCheck.requiredScripts`` in sync manually.

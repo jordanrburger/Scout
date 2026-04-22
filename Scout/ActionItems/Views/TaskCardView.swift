@@ -1,0 +1,198 @@
+import SwiftUI
+
+/// Editorial task entry. No card chrome — entries live on the page separated
+/// by hairline rules. Layout: priority-dot gutter · content column · meta rail.
+struct TaskCardView: View {
+    let task: ActionTask
+    let kind: ActionSection.Kind
+    let displayedDate: Date
+    let scoutDirectory: URL
+    let onOp: (WriteOp) async throws -> Void
+
+    @State private var inlineError: String?
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 16) {
+            gutter
+            content
+                .frame(maxWidth: .infinity, alignment: .leading)
+            rail
+                .frame(width: 140, alignment: .trailing)
+        }
+        .padding(.vertical, 18)
+        .overlay(alignment: .bottom) {
+            EditorialRule()
+        }
+    }
+
+    // MARK: - Gutter
+
+    private var gutter: some View {
+        VStack(spacing: 8) {
+            Circle()
+                .fill(DS.priorityColor(kind))
+                .frame(width: 10, height: 10)
+                .shadow(color: DS.priorityColor(kind).opacity(task.done ? 0 : 0.20), radius: 0, y: 0)
+                .overlay {
+                    Circle()
+                        .strokeBorder(DS.priorityColor(kind).opacity(task.done ? 0 : 0.20), lineWidth: 3)
+                        .frame(width: 16, height: 16)
+                }
+                .opacity(task.done ? 0.55 : 1)
+                .padding(.top, 6)
+            Rectangle()
+                .fill(DS.Rule.soft)
+                .frame(width: 1)
+        }
+        .frame(width: 22)
+    }
+
+    // MARK: - Content column
+
+    private var content: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            title
+
+            if !task.body.isEmpty {
+                InlineMarkdownText(task.body)
+                    .font(DS.serif(13.5))
+                    .foregroundStyle(DS.Ink.p2)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: 640, alignment: .leading)
+            }
+
+            if !task.comments.isEmpty {
+                CommentListView(comments: task.comments)
+            }
+
+            if !task.deepLinks.isEmpty {
+                TaskLinksView(links: task.deepLinks)
+            }
+
+            TaskActionsView(
+                task: task,
+                displayedDate: displayedDate,
+                scoutDirectory: scoutDirectory
+            ) { op in
+                do {
+                    try await onOp(op)
+                    await MainActor.run { inlineError = nil }
+                } catch let err as ActionItemsWriterError {
+                    await MainActor.run { inlineError = describe(err) }
+                } catch {
+                    await MainActor.run { inlineError = error.localizedDescription }
+                }
+            }
+
+            if !task.done {
+                CommentComposerView(task: task, displayedDate: displayedDate) { text in
+                    do {
+                        let author = UserDefaults.standard.string(forKey: "authorName") ?? "user"
+                        try await onOp(.addComment(subject: task.plainSubject, text: text, author: author))
+                        await MainActor.run { inlineError = nil }
+                    } catch let err as ActionItemsWriterError {
+                        await MainActor.run { inlineError = describe(err) }
+                    } catch {
+                        await MainActor.run { inlineError = error.localizedDescription }
+                    }
+                }
+            }
+
+            if let err = inlineError {
+                Text(err)
+                    .font(DS.sans(11))
+                    .foregroundStyle(DS.Status.err)
+                    .padding(.top, 2)
+            }
+        }
+    }
+
+    private var title: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            InlineMarkdownText(task.subject)
+                .font(DS.serif(15.5, weight: .medium))
+                .foregroundStyle(task.done ? DS.Ink.p3 : DS.Ink.p1)
+                .strikethrough(task.done, color: DS.Ink.p4)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 4)
+            trailingStatus
+        }
+    }
+
+    @ViewBuilder
+    private var trailingStatus: some View {
+        if task.done {
+            statusPill("Done", color: DS.Status.ok)
+        } else if let until = task.snoozedUntil {
+            HStack(spacing: 3) {
+                Image(systemName: "moon.zzz.fill")
+                    .imageScale(.small)
+                Text(dateShort(until))
+            }
+            .font(DS.mono(10.5))
+            .foregroundStyle(DS.Ink.p3)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 2)
+            .background(EditorialChipBackground())
+        }
+    }
+
+    private func statusPill(_ label: String, color: Color) -> some View {
+        Text(label)
+            .font(DS.mono(10.5, weight: .medium))
+            .foregroundStyle(color)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 2)
+            .background(EditorialChipBackground())
+    }
+
+    // MARK: - Meta rail
+
+    private var rail: some View {
+        VStack(alignment: .trailing, spacing: 4) {
+            if let carried = task.carriedInFrom {
+                railRow(key: "carry", value: dateShort(carried))
+            }
+            if let snoozed = task.snoozedUntil, !task.done {
+                railRow(key: "until", value: dateShort(snoozed))
+            }
+            if task.lineNumber > 0 {
+                railRow(key: "line", value: "\(task.lineNumber)")
+            }
+        }
+        .padding(.top, 6)
+    }
+
+    @ViewBuilder
+    private func railRow(key: String, value: String) -> some View {
+        HStack(spacing: 6) {
+            Text(key)
+                .font(DS.mono(11))
+                .foregroundStyle(DS.Ink.p4)
+            Text(value)
+                .font(DS.mono(11, weight: .medium))
+                .foregroundStyle(DS.Ink.p2)
+        }
+    }
+
+    // MARK: - Helpers
+
+    private func describe(_ err: ActionItemsWriterError) -> String {
+        switch err {
+        case .cliNonZeroExit(_, let stderr, let kind):
+            switch kind {
+            case .noMatch:     return "Task may have been edited externally — refreshing.\n\(stderr)"
+            case .ambiguous:   return "Subject matched multiple tasks.\n\(stderr)"
+            case .environment: return "Python environment problem.\n\(stderr)"
+            case .other:       return stderr.isEmpty ? "Write failed." : stderr
+            }
+        case .processFailed(let e):
+            return "Process failed: \(e.localizedDescription)"
+        }
+    }
+
+    private func dateShort(_ d: Date) -> String {
+        let fmt = DateFormatter(); fmt.dateFormat = "MMM d"; fmt.timeZone = TimeZone(identifier: "America/New_York")
+        return fmt.string(from: d)
+    }
+}

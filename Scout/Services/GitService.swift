@@ -1,0 +1,235 @@
+import Foundation
+
+final class GitService: @unchecked Sendable {
+    private let repoURL: URL
+    private let runner: any ProcessRunner
+
+    init(repoURL: URL, runner: any ProcessRunner) {
+        self.repoURL = repoURL
+        self.runner = runner
+    }
+
+    /// List commits in the given time range whose subject starts with `prefix`.
+    func commits(
+        between start: Date,
+        and end: Date,
+        matchingPrefix prefix: String
+    ) async throws -> [Commit] {
+        let iso = ISO8601DateFormatter()
+        let sep = "\u{1E}"                  // ASCII record separator
+        let format = ["%H", "%h", "%ct", "%s"].joined(separator: sep)
+        let args = [
+            "-C", repoURL.path,
+            "log",
+            "--since=\(iso.string(from: start))",
+            "--until=\(iso.string(from: end))",
+            "--format=\(format)",
+            "--shortstat"
+        ]
+        let result = try await runner.run(
+            executable: URL(fileURLWithPath: "/usr/bin/env"),
+            arguments: ["git"] + args,
+            environment: [:],
+            workingDirectory: repoURL
+        )
+        guard result.exitCode == 0 else {
+            throw GitServiceError.gitExitNonZero(Int(result.exitCode))
+        }
+        let text = String(data: result.stdout, encoding: .utf8) ?? ""
+        return parse(gitLogOutput: text, prefix: prefix)
+    }
+
+    /// Return the diff between two commits (or ranges like "A^..B").
+    func diff(from shaA: String, to shaB: String) async throws -> String {
+        let result = try await runner.run(
+            executable: URL(fileURLWithPath: "/usr/bin/env"),
+            arguments: ["git", "-C", repoURL.path, "diff", "\(shaA)..\(shaB)"],
+            environment: [:],
+            workingDirectory: repoURL
+        )
+        return String(data: result.stdout, encoding: .utf8) ?? ""
+    }
+
+    private func parse(gitLogOutput: String, prefix: String) -> [Commit] {
+        var commits: [Commit] = []
+        // Each commit is: "<sha>\u{1E}<short>\u{1E}<unix-ts>\u{1E}<subject>\n<shortstat-line>?\n?"
+        let lines = gitLogOutput.components(separatedBy: "\n")
+        var i = 0
+        while i < lines.count {
+            let line = lines[i]
+            if line.contains("\u{1E}") {
+                let parts = line.components(separatedBy: "\u{1E}")
+                guard parts.count == 4 else { i += 1; continue }
+                let sha = parts[0], short = parts[1], ts = parts[2], subject = parts[3]
+                if !subject.hasPrefix(prefix) { i += 1; continue }
+                let date = Date(timeIntervalSince1970: TimeInterval(ts) ?? 0)
+                var filesChanged = 0, insertions = 0, deletions = 0
+                if i + 1 < lines.count {
+                    let stats = lines[i + 1]
+                    if stats.contains("file") {
+                        (filesChanged, insertions, deletions) = Self.parseShortStat(stats)
+                        i += 1
+                    }
+                }
+                commits.append(Commit(
+                    id: sha, shortSHA: short, timestamp: date,
+                    subject: subject,
+                    filesChanged: filesChanged,
+                    insertions: insertions, deletions: deletions
+                ))
+            }
+            i += 1
+        }
+        return commits
+    }
+
+    static func parseShortStat(_ s: String) -> (Int, Int, Int) {
+        func captureInt(_ pattern: String, in s: String) -> Int {
+            guard let re = try? NSRegularExpression(pattern: pattern) else { return 0 }
+            let range = NSRange(s.startIndex..., in: s)
+            if let m = re.firstMatch(in: s, range: range),
+               let r = Range(m.range(at: 1), in: s) {
+                return Int(s[r]) ?? 0
+            }
+            return 0
+        }
+        return (
+            captureInt(#"(\d+) files? changed"#, in: s),
+            captureInt(#"(\d+) insertions?"#, in: s),
+            captureInt(#"(\d+) deletions?"#, in: s)
+        )
+    }
+}
+
+enum GitServiceError: Error, Equatable {
+    case gitExitNonZero(Int)
+    case commitFailed(exitCode: Int32, stderr: String)
+}
+
+protocol GitServiceProtocol: Sendable {
+    func commitPaths(_ relPaths: [String], message: String) async throws
+}
+
+extension GitService {
+    /// Stage all changes in the repo and create a commit with ``message``.
+    /// No-ops cleanly if the working tree is clean or if ``repoURL`` is not
+    /// a git repo. Never throws on either of those conditions — hardening
+    /// move #3 must not take down a successful CLI write when git is absent.
+    func commitAll(message: String) async throws {
+        // Bail silently if not a git repo.
+        let checkRepo = try await runner.run(
+            executable: URL(fileURLWithPath: "/usr/bin/env"),
+            arguments: ["git", "-C", repoURL.path, "rev-parse", "--is-inside-work-tree"],
+            environment: [:],
+            workingDirectory: repoURL
+        )
+        guard checkRepo.exitCode == 0 else { return }
+
+        // Stage all changes.
+        _ = try await runner.run(
+            executable: URL(fileURLWithPath: "/usr/bin/env"),
+            arguments: ["git", "-C", repoURL.path, "add", "-A"],
+            environment: [:],
+            workingDirectory: repoURL
+        )
+
+        // If nothing is staged (e.g. clean tree or only ignored files), skip.
+        let diffIndex = try await runner.run(
+            executable: URL(fileURLWithPath: "/usr/bin/env"),
+            arguments: ["git", "-C", repoURL.path, "diff", "--cached", "--quiet"],
+            environment: [:],
+            workingDirectory: repoURL
+        )
+        if diffIndex.exitCode == 0 { return }  // exit 0 means no staged diff
+
+        _ = try await runner.run(
+            executable: URL(fileURLWithPath: "/usr/bin/env"),
+            arguments: ["git", "-C", repoURL.path, "commit", "-m", message],
+            environment: [:],
+            workingDirectory: repoURL
+        )
+    }
+
+    /// Commit only the given paths with the given message. Any unrelated
+    /// staged work in the repo is left untouched.
+    ///
+    /// 1. `git rev-parse --is-inside-work-tree` — bail silently if not a repo.
+    /// 2. `git add -- <paths>` — stage only the named paths.
+    /// 3. `git diff --cached --quiet -- <paths>` — if exit 0, nothing to commit.
+    /// 4. `git commit -m <message> -- <paths>` — scoped commit.
+    func commitPaths(_ relPaths: [String], message: String) async throws {
+        let repo = repoURL.path
+
+        let checkRepo = try await runner.run(
+            executable: URL(fileURLWithPath: "/usr/bin/env"),
+            arguments: ["git", "-C", repo, "rev-parse", "--is-inside-work-tree"],
+            environment: [:], workingDirectory: repoURL
+        )
+        guard checkRepo.exitCode == 0 else { return }
+
+        _ = try await runner.run(
+            executable: URL(fileURLWithPath: "/usr/bin/env"),
+            arguments: ["git", "-C", repo, "add", "--"] + relPaths,
+            environment: [:], workingDirectory: repoURL
+        )
+
+        let diff = try await runner.run(
+            executable: URL(fileURLWithPath: "/usr/bin/env"),
+            arguments: ["git", "-C", repo, "diff", "--cached", "--quiet", "--"] + relPaths,
+            environment: [:], workingDirectory: repoURL
+        )
+        if diff.exitCode == 0 { return }
+
+        let commit = try await runner.run(
+            executable: URL(fileURLWithPath: "/usr/bin/env"),
+            arguments: ["git", "-C", repo, "commit", "-m", message, "--"] + relPaths,
+            environment: [:], workingDirectory: repoURL
+        )
+        if commit.exitCode != 0 {
+            let stderr = String(data: commit.stderr, encoding: .utf8) ?? ""
+            throw GitServiceError.commitFailed(exitCode: commit.exitCode, stderr: stderr)
+        }
+    }
+}
+
+extension GitService: GitServiceProtocol {}
+
+/// Production `ProcessRunner`. Spawns a real child process.
+struct SystemProcessRunner: ProcessRunner {
+    func run(
+        executable: URL,
+        arguments: [String],
+        environment: [String: String],
+        workingDirectory: URL?
+    ) async throws -> ProcessResult {
+        try await withCheckedThrowingContinuation { cont in
+            let p = Process()
+            p.executableURL = executable
+            p.arguments = arguments
+            p.currentDirectoryURL = workingDirectory
+            if !environment.isEmpty {
+                var env = ProcessInfo.processInfo.environment
+                for (k, v) in environment { env[k] = v }
+                p.environment = env
+            }
+            let outPipe = Pipe()
+            let errPipe = Pipe()
+            p.standardOutput = outPipe
+            p.standardError = errPipe
+            p.terminationHandler = { proc in
+                let out = outPipe.fileHandleForReading.readDataToEndOfFile()
+                let err = errPipe.fileHandleForReading.readDataToEndOfFile()
+                cont.resume(returning: ProcessResult(
+                    exitCode: proc.terminationStatus,
+                    stdout: out,
+                    stderr: err
+                ))
+            }
+            do {
+                try p.run()
+            } catch {
+                cont.resume(throwing: error)
+            }
+        }
+    }
+}

@@ -39,6 +39,19 @@ xcodebuild -scheme Scout -destination 'platform=macOS' build
 xcodebuild -scheme Scout -destination 'platform=macOS' test
 ```
 
+### Dev build vs. release build (running both side by side)
+
+Debug and Release builds use **different bundle identifiers** on purpose, so you can keep the stable app from the DMG installed in `/Applications` and simultaneously run a development copy out of Xcode without either one clobbering the other.
+
+| Config | Bundle ID | Display name | Where it lives |
+| --- | --- | --- | --- |
+| Release (DMG install) | `com.scout.Scout` | Scout | `/Applications/Scout.app` |
+| Debug (Xcode ⌘R) | `com.scout.Scout.dev` | Scout Dev | `~/Library/Developer/Xcode/DerivedData/.../Debug/Scout.app` |
+
+Because the bundle IDs differ, they have **separate `UserDefaults`, separate menu-bar icons, and separate "Launch at login" registrations**. They still read/write the same `~/Scout/` directory — that's the intended shared state, since your dev build should see your real Scout data.
+
+Typical workflow: keep "Scout" running from `/Applications` all day, and spin up "Scout Dev" from Xcode whenever you want to try a change. Quit the dev copy when you're done; the stable app keeps running unaffected.
+
 ## First-run configuration
 
 Cmd+, opens Settings. A few fields are worth filling in:

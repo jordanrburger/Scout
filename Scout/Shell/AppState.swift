@@ -12,6 +12,7 @@ final class AppState: ObservableObject {
     let fileWatcher: FileWatcher
     let trackerService: UsageTrackerService
     let sessionTokensService: SessionTokensService
+    let connectorHealthService: ConnectorHealthService
     let sessionLogService: SessionLogService
     let scheduleService: LaunchdScheduleService
     let scheduleEditorService: ScheduleEditorService
@@ -43,6 +44,11 @@ final class AppState: ObservableObject {
         )
         let tokens = SessionTokensService(
             trackerURL: scoutDir.appendingPathComponent(".scout-logs/session-tokens.jsonl"),
+            fileEvents: watcher
+        )
+        let connectorHealth = ConnectorHealthService(
+            logsDirectory: scoutDir.appendingPathComponent(".scout-logs"),
+            ackStoreURL: scoutDir.appendingPathComponent(".scout-cache/connector-alerts-acked.json"),
             fileEvents: watcher
         )
         let logs = SessionLogService(
@@ -79,6 +85,7 @@ final class AppState: ObservableObject {
         self.gitService = git
         self.trackerService = tracker
         self.sessionTokensService = tokens
+        self.connectorHealthService = connectorHealth
         self.sessionLogService = logs
         self.scheduleService = sched
         self.scheduleEditorService = editor
@@ -93,6 +100,7 @@ final class AppState: ObservableObject {
         Task { [weak self] in
             _ = try? await tracker.loadInitial()
             _ = try? await tokens.loadInitial()
+            _ = try? await connectorHealth.loadInitial()
             _ = try? await logs.loadInitial()
             await MainActor.run { sched.loadInitial() }
             _ = try? await editor.loadAll()

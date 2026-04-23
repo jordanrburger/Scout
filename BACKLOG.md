@@ -9,6 +9,19 @@ nice-to-haves.
 ## Shipped
 
 ### 2026-04-22
+- **Usage Rail Card + Connector Health (Phase 1).** `BudgetRailCard` replaced
+  by `UsageRailCard` — reads tokens from a new `.scout-logs/session-tokens.jsonl`
+  tracker fed by a Stop hook (`~/Scout/scripts/sum-session-tokens.sh`) that
+  sums `message.usage.*` across the session transcript at the end of every
+  run. Shows today / week token totals + per-model share; dollar cost hidden
+  on purpose (wrong lens on a Claude team-plan seat — included up to quota,
+  overage-only billing). Also added `ConnectorHealthRailCard` + top-of-window
+  `ConnectorAlertBanner` over the already-wired shell telemetry pipeline
+  (`connector-calls-*.jsonl`, `connector-alerts.log`); acks persist to
+  `.scout-cache/connector-alerts-acked.json` with fingerprint-scoped GC so
+  acking today's CRITICAL doesn't suppress tomorrow's. Old `usage-tracker.jsonl`
+  path + `budget-check.sh` dispatcher gate intentionally left untouched —
+  Phase 2 replaces them with `/usage` quota data (see below).
 - **Launch Claude — split menu with Ghostty/tmux, Claude Desktop Chat, and
   Claude Desktop Cowork.** The old single "Launch Claude" button drove an
   AppleScript that pressed ⌘T and typed into Ghostty, which quietly failed
@@ -86,6 +99,20 @@ nice-to-haves.
 ## Control Center view (Scout.app)
 
 ### Soon
+- **Usage Rail Card — Phase 2 (quota bars + dispatcher gate).** Phase 1
+  shipped tokens + dollar derivation; Phase 2 surfaces the three `/usage`
+  bars (current session, current week all-models, current week Sonnet-only)
+  and replaces the dollar-based `budget-check.sh` dispatcher gate with a
+  quota-based one. Viable delivery path confirmed during Phase 1 spike:
+  the `rate_limits.{five_hour,seven_day}.used_percentage` object is exposed
+  to `statusLine` hooks but NOT to any hook that fires for `claude -p`. So
+  the implementation is: wrap the global `~/.claude/settings.json`
+  `statusLine` command (currently points at claude-hud) with a tee that
+  dumps the JSON to `.scout-cache/usage-quota.json` before invoking
+  claude-hud unchanged. Interactive Claude Code sessions (which Jordan runs
+  throughout the workday) keep the file fresh; it's per-account data so it
+  doesn't matter who triggers the refresh. Needs its own spec/brainstorm —
+  deferred from Phase 1 to keep scope honest.
 - **"Run now" should refresh the heartbeat schedule.** Clicking *Run now*
   from the heartbeat table fires the job, but the scheduled row sits there
   unchanged — the next-fire timestamp doesn't shift and the row isn't
@@ -93,17 +120,33 @@ nice-to-haves.
   it, or have `LaunchdScheduleService.recompute()` fire immediately after
   `RunnerService.runNow` completes so the same item doesn't keep looking
   "queued" at the past time.
-- **Budget panel shows $0 even when real spend is non-trivial.** `BudgetRailCard`
-  sums `Run.cost` from session logs, but those values are mostly `nil` — so
-  today's budget reads $0 while actual Claude usage is much higher. This
-  also makes the heartbeat dispatcher's "budget permits" gate meaningless.
-  Claude Code's `/usage` slash command has the real numbers; figure out how
-  to feed that into Scout (sidecar JSON dropped by a hook? periodic poll of
-  a local usage file? manual paste into `.scout-config.yaml`?) so both the
-  rail card and the dispatcher see ground truth. Today's tracker (`.scout-logs/usage-tracker.jsonl`)
-  only captures what sessions self-report, which isn't everything.
-
 ### Nice-to-have
+- **Usage / Connector Health — Phase 1 follow-ups from final review.**
+  Small polish items surfaced by the final branch review on 2026-04-22,
+  none blocking:
+  - `SessionTokensService.tokens(for sessionId:)` lookup — spec-listed but
+    not implemented since nothing currently calls it. Add before the
+    per-run stats pane starts consuming token data.
+  - "View full report" button on `ConnectorHealthRailCard` footer that
+    opens a sheet rendering `~/Scout/knowledge-base/connector-health.md`
+    as markdown. Called out in the spec, not in the plan.
+  - "Open auth settings" button in `ConnectorAlertBanner` popover —
+    deep-links to `claude.ai/settings/connectors` for Google/Granola or
+    copies `gh auth login` / plugin re-auth commands to clipboard.
+    Called out in the spec, not in the plan.
+  - `connector-alerts.log` fixture trimmed to one CRITICAL line during
+    implementation to match the test assertion — WARNING-level alert path
+    currently has no test coverage. Add a fixture + test for WARNING
+    parsing and rendering.
+  - `ConnectorAlert.fingerprint` uses raw `connector|level|first_seen`
+    string; spec called for `sha256(...)`. Semantically equivalent today
+    but will diverge if shell side ever writes its own fingerprints. Align
+    before any shell-side ack coordination work.
+  - `ConnectorAckStore` wraps its dict in a `DispatchQueue` though all
+    callers are `@MainActor`. Swift 6 strict mode will warn; simplify to
+    plain `@MainActor` state when the time comes.
+
+
 - **Activity heatmap should adapt to available history.** Hardcoded 52-week
   grid is overkill when Scout only has ~10 days of data — 99% of cells are
   empty and the real activity crowds into one column on the right. Should
@@ -125,6 +168,37 @@ Decomposed from the broader "make Control Center as good as possible" ask
 on 2026-04-21. Recommended build order below. Each lands on the Run detail
 pane, so the first one (stats) improves the surface that the next two
 render onto.
+
+- **View / interact with a running SCOUT session (RESEARCH-GATED).** The
+  fundamentally missing capability — today every scheduled scout run is a
+  sealed box. `run-scout.sh` invokes `claude --print ...` with
+  `--remote-control-session-name-prefix "scout"`, but the comment in that
+  script already flags that *`-p` mode does not support remote control*.
+  Scout.app's Runs tab shows only what the session wrote to
+  `.scout-logs/scout-*.log` after the fact. Jordan has no way to watch a
+  run as it happens, pause it, answer a mid-run question, or drop in to
+  course-correct. **This is a research problem first, not a build problem.**
+  Open questions to investigate (tracked in `~/Scout/docs/Wishlist.md` as
+  a dreaming research topic):
+  - Can scheduled runs use a non-`-p` Claude Code mode that keeps remote
+    control open while still being headless enough for launchd?
+  - Is there a Claude Code "background session" or "detached session"
+    pattern that Scout.app could attach to live?
+  - As a minimum-viable start, can the app stream `tail -f` of the active
+    run's log file (detectable via the lock file `.scout-session.lock` +
+    filename pattern) into a live terminal view — read-only, but at
+    least Jordan can see what the session is doing right now?
+  - Claude Agent SDK alternative: if Scout moved off the `claude` CLI to
+    the Agent SDK, would that open up richer streaming / interaction?
+    (Bigger rewrite, but may be where the answer lives.)
+  - Is there value in a hybrid — scheduled launches stay `-p`, but a
+    "Take over this run" button spawns a parallel interactive session
+    primed with the current run's context? (Doesn't actually attach to
+    the running session, but lets Jordan intervene without waiting for
+    it to finish.)
+  Once research narrows the options, build out the read-only streaming
+  view first (low-risk, high daily value) before attempting true
+  attach/interact.
 
 - **Per-run stats pane (v1).** `RunDetailView` today shows cost / errors /
   log-size. Add: duration (from startedAt + endedAt), diffstats for the

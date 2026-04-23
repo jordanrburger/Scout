@@ -11,6 +11,7 @@ final class AppState: ObservableObject {
     // Existing Control Center services
     let fileWatcher: FileWatcher
     let trackerService: UsageTrackerService
+    let sessionTokensService: SessionTokensService
     let sessionLogService: SessionLogService
     let scheduleService: LaunchdScheduleService
     let scheduleEditorService: ScheduleEditorService
@@ -38,6 +39,10 @@ final class AppState: ObservableObject {
         let git = GitService(repoURL: scoutDir, runner: runner)
         let tracker = UsageTrackerService(
             trackerURL: scoutDir.appendingPathComponent(".scout-logs/usage-tracker.jsonl"),
+            fileEvents: watcher
+        )
+        let tokens = SessionTokensService(
+            trackerURL: scoutDir.appendingPathComponent(".scout-logs/session-tokens.jsonl"),
             fileEvents: watcher
         )
         let logs = SessionLogService(
@@ -73,6 +78,7 @@ final class AppState: ObservableObject {
         self.fileWatcher = watcher
         self.gitService = git
         self.trackerService = tracker
+        self.sessionTokensService = tokens
         self.sessionLogService = logs
         self.scheduleService = sched
         self.scheduleEditorService = editor
@@ -86,6 +92,7 @@ final class AppState: ObservableObject {
 
         Task { [weak self] in
             _ = try? await tracker.loadInitial()
+            _ = try? await tokens.loadInitial()
             _ = try? await logs.loadInitial()
             await MainActor.run { sched.loadInitial() }
             _ = try? await editor.loadAll()

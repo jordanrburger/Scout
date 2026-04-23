@@ -81,9 +81,6 @@ struct ConnectorHealthRailCard: View {
     }
 
     private func rateText(_ rate: Double) -> String {
-        if rate == 0 && state.connectorHealthService.matrix.sessionsNewestFirst.isEmpty {
-            return "—"
-        }
-        return "\(Int((rate * 100).rounded()))%"
+        "\(Int((rate * 100).rounded()))%"
     }
 }

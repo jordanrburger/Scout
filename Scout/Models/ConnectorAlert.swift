@@ -15,8 +15,14 @@ struct ConnectorAlert: Equatable, Hashable, Sendable {
     /// `connector|level|first_seen_ts` — stable across repeated entries for
     /// the same underlying alert, so acking a CRITICAL doesn't suppress a
     /// *new* CRITICAL that starts tomorrow with a fresh `first_seen_ts`.
+    private static let fingerprintDateFormatter: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime]
+        return f
+    }()
+
     var fingerprint: String {
-        "\(connector)|\(level.rawValue)|\(ISO8601DateFormatter().string(from: firstSeen))"
+        "\(connector)|\(level.rawValue)|\(Self.fingerprintDateFormatter.string(from: firstSeen))"
     }
 
     /// Parses the pipe-separated log format emitted by

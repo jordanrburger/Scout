@@ -232,6 +232,7 @@ The app invokes `scoutctl` on interactive user actions (checkbox clicks, alert a
   - `scoutctl version` completes in < 50ms.
   - `scoutctl action-items mark-done ...` completes in < 200ms including the file rewrite (warm).
 - A ruff rule or a simple import-analysis test flags top-level imports of the blacklisted modules and fails CI.
+- **CI-aware thresholds.** The latency assertions read a `LATENCY_BUDGET_MULTIPLIER` env var (default `1.0` locally; `4.0` on shared GitHub Actions runners, set in the workflow YAML). Local CI enforces <100ms / <50ms / <200ms strictly; cloud CI enforces <400ms / <200ms / <800ms — same protection against the actual failure mode (heavy top-level imports producing 200–400ms regressions) but tolerant of shared-runner I/O variance. The `test_no_heavy_imports_at_startup` static-analysis check is *not* multiplied — it's environment-independent and catches the real regression source directly.
 
 This keeps the CLI responsive enough that scout-app's UI doesn't feel laggy when driving it.
 
@@ -922,7 +923,12 @@ Every action item, KB entry, hook log line, and session is assigned a ULID at cr
     - [ ] [#A3F7] Submit Lever feedback to recruiting
     ```
 
-    A full 26-char ULID-as-comment on every list item would degrade the Obsidian reading/writing experience and is fragile to copy-paste. A 4-char prefix is light enough to live inline and easy enough to ignore visually. The engine maintains the prefix↔ULID mapping in `$SCOUT_DATA_DIR/.scout-state/id-map.json` (in v0.5+, in the SQLite store). On the rare prefix collision the conflicted pair extends to 5 chars.
+    A full 26-char ULID-as-comment on every list item would degrade the Obsidian reading/writing experience and is fragile to copy-paste. A 4-char prefix is light enough to live inline and easy enough to ignore visually. The engine maintains the prefix↔ULID mapping in `$SCOUT_DATA_DIR/.scout-state/id-map.json` (in v0.5+, in the SQLite store).
+
+    **Prefix length is fixed at 4 characters.** The engine never rewrites markdown files in the background to extend a prefix — that would race the user's Obsidian editor and cause cursor jumps or save conflicts. Collision handling is purely additive:
+
+    - **At creation:** if a freshly generated 4-char prefix already exists in the id-map, the engine retries with a new random prefix until it finds a free one. The Crockford base32 space is 32^4 ≈ 1M; collisions at personal-scale entity counts (thousands, not millions) are statistically rare and resolution is invisible to the user.
+    - **At parse time (user-introduced duplicates via copy-paste):** if `[#A3F7]` appears twice in the same daily note, the diff engine identifies the original line by title + last-known-position match against the id-map, and assigns a fresh prefix to the *new* (copied) line. The reassignment is applied on the user's next mutation through `mark_done`/`snooze`/`add_comment` or on Scout's next scheduled markdown rewrite for that file — never as a background overwrite while the user is actively editing.
 
 If a user accidentally deletes a `[#xxxx]` prefix, the diff engine fuzzy-matches by title + section position against the last-known projection state. If reattachment fails, the engine logs a warning and treats the line as a *new* item — never silently merged with an old one.
 

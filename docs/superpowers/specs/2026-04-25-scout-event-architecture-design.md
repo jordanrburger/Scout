@@ -164,6 +164,32 @@ runtime:
 
 The engine ships **builtin runners** (`webhook-runner`, `polling-runner`, `bot-runner`, `script-runner`, `connector-runner`) that interpret manifests of common shapes. Power-user fallback: a connector can ship a `connector.py` and `handler.py` implementing the documented `Connector` interface.
 
+#### Egress failure handling
+
+External APIs fail. Linear returns 502; Slack rate-limits; a Telegram bot token expires. Every connector follows a uniform protocol so the rest of the system stays predictable:
+
+1. **Retry with exponential backoff.** Standard envelope: 1s, 4s, 16s, 60s, then give up. Per-source overrides (e.g., respect `Retry-After` headers) are allowed.
+2. **Emit on giveup.** After the retry budget is exhausted, the connector emits `system.connector.egress_failed`:
+
+    ```json
+    {
+      "kind": "system.connector.egress_failed",
+      "source": "connector:linear",
+      "payload": {
+        "target_event_id": "01HX...",
+        "error_class": "http.502",
+        "attempts": 4,
+        "outbound_kind": "outbound.linear.update_issue"
+      }
+    }
+    ```
+
+    The original outbound event's `superseded_by` is set to the failure event's id so future replays don't retry indefinitely.
+3. **Dead-letter projection.** A built-in projection consumes `system.connector.egress_failed` events and exposes them via `scoutctl connector dead-letter list`. Scout-app's status bar surfaces a count plus a per-source banner: *"Linear API is down — 3 outbound updates queued."*
+4. **Manual replay or discard.** `scoutctl connector dead-letter retry <event_id>` re-emits the original outbound event with a fresh attempt counter. `scoutctl connector dead-letter discard <event_id>` writes a tombstone and removes the entry from the dead-letter projection (used when the external state has already been resolved out-of-band).
+
+Inbound delivery failures (a webhook the connector couldn't parse, an auth signature mismatch) follow the same protocol with `kind: "system.connector.ingress_failed"`. The point is that no event ever silently disappears: every failure is itself an event in the store, visible to the user and to future replays.
+
 ### Handler
 
 A function that subscribes to event kinds and emits side effects (which may include further events). In v0.5 these live in the engine as Python; in v0.7+ they can be user-authored alongside connectors:
@@ -209,6 +235,7 @@ Concretely:
 - **Origin-aware sync.** Events carry `source`. Projection handlers that round-trip through external surfaces (markdown, the Mac app's edit fields) skip events whose source is the same surface — closes feedback loops by construction.
 - **Eventual consistency, made visible.** Projections may lag. The Mac app shows a small indicator when its view is more than ~2s behind the store. Honest UX beats the illusion of synchronous truth.
 - **Fail open, retry forever.** A handler crash logs to a dead-letter queue and retries with exponential backoff. The event is never lost. The user sees a banner; nothing wedges silently.
+- **WAL checkpoint discipline.** The dispatcher owns SQLite WAL checkpointing. It runs `PRAGMA wal_checkpoint(TRUNCATE)` on an hourly cadence and after each batch of ≥100 events processed. All other processes (connectors, projection handlers, CLI invocations) open short-lived connections — they never hold read transactions across event-loop iterations. This prevents unbounded `events.db-wal` growth (a long-held read transaction blocks checkpointing in WAL mode) and keeps checkpoint latency predictable.
 
 ## Self-extensibility: Scout authors its own connectors
 
@@ -256,7 +283,9 @@ The full architecture lands in v0.5+. v0.4 makes three commitments that keep the
 
 ### 1. Stable IDs on every mutable entity
 
-Every action item, KB entry, hook log line, and session is assigned a ULID at creation time. **Storage form** is the full 26-character ULID. **Surface form for action items in markdown** is a 4-character Crockford base32 prefix in square brackets — `- [ ] [#A3F7] task title` — to avoid ULID-as-comment visual noise in Obsidian. The engine maintains the prefix↔ULID mapping in `.scout-state/id-map.json` (in v0.5+, in the SQLite store). On the rare prefix collision the conflicted pair extends to 5 chars. If the user accidentally deletes a prefix, the diff engine fuzzy-matches; if reattachment fails, the line is treated as new (never silently merged).
+Every action item, KB entry, hook log line, and session is assigned a ULID at creation time. **Storage form** is the full 26-character ULID. **Surface form for action items in markdown** is a 4-character Crockford base32 prefix in square brackets — `- [ ] [#A3F7] task title` — to avoid ULID-as-comment visual noise in Obsidian. The engine maintains the prefix↔ULID mapping in `.scout-state/id-map.json` (in v0.5+, in the SQLite store).
+
+Prefix length is **fixed at 4 characters**; the engine never rewrites markdown in the background to extend a prefix (that would race the user's editor). Collision handling is additive: regenerate a fresh random prefix at creation time on collision; for user-introduced copy-paste duplicates, identify the original via title + position match and reassign a new prefix to the copy on the next user-initiated write. See v0.4 spec §13.1 for the full rule. If the user accidentally deletes a prefix, the diff engine fuzzy-matches by title + section position; if reattachment fails, the line is treated as new (never silently merged).
 
 KB entries, JSONL log lines, and session records carry the full ULID directly — they're not edited in human-friendly markdown.
 

@@ -25,7 +25,12 @@ struct LaunchdScheduleServiceTests {
         c.year = 2026; c.month = 4; c.day = 19; c.hour = 13; c.minute = 0
         c.timeZone = TimeZone(identifier: "America/New_York")
         let now = Calendar(identifier: .gregorian).date(from: c)!
-        let fires = LaunchdScheduleService.nextFires(from: entries, after: now, limit: 3)
+        let fires = LaunchdScheduleService.nextFires(
+            from: entries,
+            after: now,
+            limit: 3,
+            timeZone: TimeZone(identifier: "America/New_York")!
+        )
         #expect(fires.count == 3)
 
         var cal = Calendar(identifier: .gregorian)

@@ -7,15 +7,17 @@ struct SessionLogServiceTests {
 
     // MARK: - Filename parsing
 
+    private static let ny = TimeZone(identifier: "America/New_York")!
+
     @Test func parseFilename_scoutMorningBriefing() {
         // 2026-04-20 is a Monday
         let url = URL(fileURLWithPath: "/x/scout-2026-04-20_08-03.log")
-        let parsed = SessionLogService.parseFilename(url)
+        let parsed = SessionLogService.parseFilename(url, timeZone: Self.ny)
         #expect(parsed?.runnerScript == "run-scout.sh")
         #expect(parsed?.type == .morningBriefing)
         #expect(parsed?.startedAt != nil)
         let comps = Calendar(identifier: .gregorian)
-            .dateComponents(in: TimeZone(identifier: "America/New_York")!, from: parsed!.startedAt)
+            .dateComponents(in: Self.ny, from: parsed!.startedAt)
         #expect(comps.hour == 8)
         #expect(comps.minute == 3)
     }
@@ -23,13 +25,13 @@ struct SessionLogServiceTests {
     @Test func parseFilename_weekendBriefing() {
         // 2026-04-19 is a Sunday
         let url = URL(fileURLWithPath: "/x/scout-2026-04-19_08-03.log")
-        let parsed = SessionLogService.parseFilename(url)
+        let parsed = SessionLogService.parseFilename(url, timeZone: Self.ny)
         #expect(parsed?.type == .weekendBriefing)
     }
 
     @Test func parseFilename_dreamingNightly() {
         let url = URL(fileURLWithPath: "/x/dreaming-2026-04-18_22-00.log")
-        let parsed = SessionLogService.parseFilename(url)
+        let parsed = SessionLogService.parseFilename(url, timeZone: Self.ny)
         #expect(parsed?.type == .dreamingNightly)
         #expect(parsed?.runnerScript == "run-dreaming.sh")
     }
@@ -207,7 +209,8 @@ struct SessionLogServiceTests {
         let service = await SessionLogService(
             logsDirectory: tempDir,
             trackerService: tracker,
-            fileEvents: NoopFS()
+            fileEvents: NoopFS(),
+            timeZone: Self.ny
         )
         let runs = try await service.loadInitial()
         #expect(!runs.isEmpty, "fixture logs should produce at least one Run")
@@ -246,7 +249,8 @@ struct SessionLogServiceTests {
             logsDirectory: tempDir,
             trackerService: tracker,
             fileEvents: NoopFS(),
-            clock: clock
+            clock: clock,
+            timeZone: Self.ny
         )
         let runs = try await service.loadInitial()
         #expect(runs.count == 1)
@@ -281,7 +285,8 @@ struct SessionLogServiceTests {
             logsDirectory: tempDir,
             trackerService: tracker,
             fileEvents: NoopFS(),
-            clock: clock
+            clock: clock,
+            timeZone: Self.ny
         )
         let runs = try await service.loadInitial()
         #expect(runs.count == 1)
@@ -320,7 +325,8 @@ struct SessionLogServiceTests {
             logsDirectory: tempDir,
             trackerService: tracker,
             fileEvents: NoopFS(),
-            clock: clock
+            clock: clock,
+            timeZone: Self.ny
         )
         let runs = try await service.loadInitial()
         #expect(runs.count == 1)
@@ -357,7 +363,8 @@ struct SessionLogServiceTests {
             logsDirectory: tempDir,
             trackerService: tracker,
             fileEvents: NoopFS(),
-            clock: clock
+            clock: clock,
+            timeZone: Self.ny
         )
         let runs = try await service.loadInitial()
         #expect(runs.count == 1)

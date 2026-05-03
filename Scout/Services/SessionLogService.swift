@@ -11,6 +11,7 @@ final class SessionLogService: ObservableObject {
     private let gitService: GitService?
     private let fileEvents: any FileSystemEventSource
     private let clock: any ClockSource
+    private let timeZone: TimeZone
     private var watchTask: Task<Void, Never>?
 
     init(
@@ -18,13 +19,15 @@ final class SessionLogService: ObservableObject {
         trackerService: UsageTrackerService,
         gitService: GitService? = nil,
         fileEvents: any FileSystemEventSource,
-        clock: any ClockSource = SystemClock()
+        clock: any ClockSource = SystemClock(),
+        timeZone: TimeZone = .current
     ) {
         self.logsDirectory = logsDirectory
         self.trackerService = trackerService
         self.gitService = gitService
         self.fileEvents = fileEvents
         self.clock = clock
+        self.timeZone = timeZone
     }
 
     // MARK: - Filename parsing
@@ -35,7 +38,10 @@ final class SessionLogService: ObservableObject {
         let startedAt: Date
     }
 
-    nonisolated static func parseFilename(_ url: URL) -> ParsedFilename? {
+    nonisolated static func parseFilename(
+        _ url: URL,
+        timeZone: TimeZone = .current
+    ) -> ParsedFilename? {
         let name = url.deletingPathExtension().lastPathComponent
         // Accept: scout-YYYY-MM-DD_HH-MM, dreaming-YYYY-MM-DD_HH-MM, research-YYYY-MM-DD_HH-MM
         guard let underscoreIdx = name.firstIndex(of: "_") else { return nil }
@@ -49,13 +55,19 @@ final class SessionLogService: ObservableObject {
         let tailParts = tail.components(separatedBy: "-")
         guard tailParts.count == 2 else { return nil }
 
+        // Log filenames carry the system's local-clock time at the moment the
+        // shell script ran (`date "+%Y-%m-%d_%H-%M"`). Parsing them in any
+        // fixed zone breaks the moment the user travels — the run's wall
+        // clock would shift, and downstream `since`/`until` git filters
+        // would window past the actual commits. Honor the caller-supplied
+        // zone (defaults to current).
         var components = DateComponents()
         components.year = Int(headParts[1])
         components.month = Int(headParts[2])
         components.day = Int(headParts[3])
         components.hour = Int(tailParts[0])
         components.minute = Int(tailParts[1])
-        components.timeZone = TimeZone(identifier: "America/New_York")
+        components.timeZone = timeZone
         guard let date = Calendar(identifier: .gregorian).date(from: components) else { return nil }
 
         let runnerScript: String = {
@@ -67,13 +79,17 @@ final class SessionLogService: ObservableObject {
             }
         }()
 
-        let type = deriveType(runner: runner, date: date)
+        let type = deriveType(runner: runner, date: date, timeZone: timeZone)
         return ParsedFilename(runnerScript: runnerScript, type: type, startedAt: date)
     }
 
-    nonisolated private static func deriveType(runner: String, date: Date) -> RunType {
+    nonisolated static func deriveType(
+        runner: String,
+        date: Date,
+        timeZone: TimeZone = .current
+    ) -> RunType {
         var cal = Calendar(identifier: .gregorian)
-        cal.timeZone = TimeZone(identifier: "America/New_York")!
+        cal.timeZone = timeZone
         let hour = cal.component(.hour, from: date)
         let weekday = cal.component(.weekday, from: date)   // 1=Sun ... 7=Sat
         let isWeekend = (weekday == 1 || weekday == 7)
@@ -81,7 +97,18 @@ final class SessionLogService: ObservableObject {
         switch runner {
         case "scout":
             if isWeekend {
-                return hour == 8 ? .weekendBriefing : .manual
+                // Weekend manual runs were previously collapsed to .manual,
+                // which then poisoned both the displayed type and the commit
+                // prefix filter. Bucket by hour so the row says something
+                // meaningful — a 7pm Sunday rebuild reads as a consolidation,
+                // not as a generic "manual run".
+                switch hour {
+                case ..<10: return .weekendBriefing
+                case 10..<12: return .consolidation11am
+                case 12..<15: return .consolidation1pm
+                case 15..<18: return .consolidation5pm
+                default: return .consolidation7pm
+                }
             }
             switch hour {
             case 8:  return .morningBriefing
@@ -89,7 +116,14 @@ final class SessionLogService: ObservableObject {
             case 13: return .consolidation1pm
             case 17: return .consolidation5pm
             case 19: return .consolidation7pm
-            default: return .manual
+            // Off-slot weekday runs still belong to the briefing/consolidation
+            // family — pick the closest scheduled bucket so the prefix filter
+            // ("briefing"/"consolidation") still catches the run's commits.
+            case ..<10: return .morningBriefing
+            case 10..<12: return .consolidation11am
+            case 12..<15: return .consolidation1pm
+            case 15..<18: return .consolidation5pm
+            default: return .consolidation7pm
             }
         case "dreaming":
             if isWeekend {
@@ -244,10 +278,11 @@ final class SessionLogService: ObservableObject {
         let logURLs = entries.filter { $0.pathExtension == "log" }
         let tracker = trackerService // capture for nonisolated use below
         let nowSnapshot = clock.now() // capture clock reading for orphan sweep
+        let tz = timeZone
         let assembled = await Task.detached { () -> [Run] in
             var out: [Run] = []
             for url in logURLs {
-                guard let filename = Self.parseFilename(url) else { continue }
+                guard let filename = Self.parseFilename(url, timeZone: tz) else { continue }
                 guard let body = try? Self.parseBody(at: url, filename: filename) else { continue }
                 let cost = await tracker.cost(
                     matching: filename.type.costTrackerKey,
@@ -290,12 +325,16 @@ final class SessionLogService: ObservableObject {
 
     /// Resolve commits for a Run on demand. Called by the detail pane when the
     /// user opens the Diff tab — keeps loadInitial() from doing O(N) git calls
-    /// on the main thread at launch.
+    /// on the main thread at launch. Pads the upper bound by 5 minutes so
+    /// commits that the runner makes in the wind-down phase (after the
+    /// "run finished" marker is written) are still picked up.
     func commits(for run: Run) async -> [Commit] {
-        guard let git = gitService, let ended = run.endedAt else { return [] }
+        guard let git = gitService else { return [] }
+        let end = (run.endedAt ?? clock.now()).addingTimeInterval(5 * 60)
+        let start = run.startedAt.addingTimeInterval(-30)
         return (try? await git.commits(
-            between: run.startedAt,
-            and: ended,
+            between: start,
+            and: end,
             matchingPrefix: run.type.commitsPrefix
         )) ?? []
     }
@@ -313,7 +352,7 @@ final class SessionLogService: ObservableObject {
     }
 
     private func reconcile(changedFile url: URL) async {
-        guard let filename = Self.parseFilename(url) else { return }
+        guard let filename = Self.parseFilename(url, timeZone: timeZone) else { return }
         guard let body = try? Self.parseBody(at: url, filename: filename) else { return }
         let cost = trackerService.cost(
             matching: filename.type.costTrackerKey,
@@ -373,7 +412,9 @@ extension RunType {
         }
     }
 
-    /// The commit-subject prefix used by Scout for this run type.
+    /// The commit-subject prefix used by Scout for this run type. `.manual`
+    /// returns an empty string — the run's own logs don't say which family
+    /// it ran in, so the commit picker uses the time window only.
     var commitsPrefix: String {
         switch self {
         case .morningBriefing, .weekendBriefing: return "briefing"
@@ -382,7 +423,7 @@ extension RunType {
         case .dreamingNightly, .dreamingWeekend6am, .dreamingWeekend7am:
             return "dreaming"
         case .research: return "research"
-        case .manual: return "manual"
+        case .manual: return ""
         }
     }
 }

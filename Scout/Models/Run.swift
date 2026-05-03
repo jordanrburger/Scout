@@ -42,6 +42,27 @@ enum RunStatus: String, Codable, Sendable {
     case rateLimited
 }
 
+extension RunType {
+    /// Human-readable name without embedded times — the schedule rows already
+    /// show the time, so the display label only needs to convey the kind of
+    /// work ("Consolidation", "Briefing") rather than "consolidation7pm".
+    var displayName: String {
+        switch self {
+        case .morningBriefing:    return "Morning briefing"
+        case .weekendBriefing:    return "Weekend briefing"
+        case .consolidation11am,
+             .consolidation1pm,
+             .consolidation5pm,
+             .consolidation7pm:   return "Consolidation"
+        case .dreamingNightly:    return "Dreaming"
+        case .dreamingWeekend6am,
+             .dreamingWeekend7am: return "Weekend dreaming"
+        case .research:           return "Research"
+        case .manual:             return "Manual run"
+        }
+    }
+}
+
 struct Run: Identifiable, Equatable, Hashable, Sendable {
     let id: String
     let type: RunType
@@ -64,6 +85,25 @@ struct Run: Identifiable, Equatable, Hashable, Sendable {
         let iso = ISO8601DateFormatter()
         iso.formatOptions = [.withInternetDateTime]
         return "\(type.rawValue)-\(iso.string(from: startedAt))"
+    }
+
+    /// Display name for the Control Center. When the typed bucket is `.manual`
+    /// (the catch-all for runs that didn't match any scheduled slot), fall
+    /// back to the runner script's family so the row still tells the user
+    /// what kind of work happened — "Briefing (manual)" beats just "manual".
+    var displayName: String {
+        if type != .manual { return type.displayName }
+        switch runnerScript {
+        case "run-dreaming.sh": return "Dreaming (manual)"
+        case "run-research.sh": return "Research (manual)"
+        default:                return "Briefing (manual)"
+        }
+    }
+
+    /// True when this run was triggered explicitly (Run-now) rather than by
+    /// launchd. Used to surface a small "manual" badge in run rows.
+    var wasManuallyTriggered: Bool {
+        source == .manual || source == .retry || type == .manual
     }
 }
 

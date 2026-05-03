@@ -42,10 +42,10 @@ struct NowStripView: View {
         let latest = state.sessionLogService.runs.first
         VStack(alignment: .leading, spacing: 4) {
             if let r = latest, r.status == .running {
-                bigName(r.type.rawValue)
+                bigName(r.displayName)
                 sub("running · started \(r.startedAt.formatted(.relative(presentation: .named)))", color: DS.Status.warn)
             } else if let r = latest {
-                bigName(r.type.rawValue)
+                bigName(r.displayName)
                 sub(
                     "\(tick(for: r.status)) \(r.status.rawValue) · \(r.startedAt.formatted(.relative(presentation: .named))) · \(r.commits.count) commit\(r.commits.count == 1 ? "" : "s")",
                     color: r.status == .success ? DS.Status.ok : DS.Status.err
@@ -68,11 +68,14 @@ struct NowStripView: View {
     }
 
     @ViewBuilder private var nextColumn: some View {
-        let next = state.scheduleService.upcoming.first
+        // Defensive filter: a scheduled run is by definition not "manual",
+        // so even if inferRunType regresses, never bubble .manual into the
+        // "Next up" headline.
+        let next = state.scheduleService.upcoming.first { $0.type != .manual }
         VStack(alignment: .leading, spacing: 4) {
             if let u = next {
-                bigName(u.type.rawValue)
-                sub("in \(u.scheduledAt.formatted(.relative(presentation: .named))) · dispatcher armed", color: DS.Ink.p3)
+                bigName(u.type.displayName)
+                sub("\(u.scheduledAt.formatted(.relative(presentation: .named))) · dispatcher armed", color: DS.Ink.p3)
             } else {
                 bigName("No scheduled runs")
                 sub("check LaunchAgents", color: DS.Status.warn)

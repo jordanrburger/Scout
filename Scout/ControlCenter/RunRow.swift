@@ -12,9 +12,14 @@ struct RunRow: View {
                 .foregroundStyle(iconColor)
                 .frame(width: 20, alignment: .leading)
             VStack(alignment: .leading, spacing: 2) {
-                Text(run.type.rawValue)
-                    .font(DS.sans(13, weight: .medium))
-                    .foregroundStyle(DS.Ink.p1)
+                HStack(spacing: 6) {
+                    Text(run.displayName)
+                        .font(DS.sans(13, weight: .medium))
+                        .foregroundStyle(DS.Ink.p1)
+                    if run.wasManuallyTriggered && run.type != .manual {
+                        manualBadge
+                    }
+                }
                 Text(run.startedAt.formatted(date: .abbreviated, time: .shortened))
                     .font(DS.mono(11.5))
                     .foregroundStyle(DS.Ink.p4)
@@ -34,6 +39,16 @@ struct RunRow: View {
         .padding(.vertical, 10)
         .overlay(alignment: .bottom) { EditorialRule() }
         .contentShape(Rectangle())
+    }
+
+    private var manualBadge: some View {
+        Text("manual")
+            .font(DS.mono(9.5, weight: .medium))
+            .tracking(0.06 * 9.5)
+            .foregroundStyle(DS.Ink.p3)
+            .padding(.horizontal, 5)
+            .padding(.vertical, 1.5)
+            .background(EditorialChipBackground())
     }
 
     private var statusCell: some View {

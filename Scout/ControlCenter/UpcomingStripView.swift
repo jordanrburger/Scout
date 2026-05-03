@@ -15,11 +15,12 @@ struct UpcomingStripView: View {
             }
             .padding(.bottom, 14)
 
-            if state.scheduleService.upcoming.isEmpty {
+            let scheduled = state.scheduleService.upcoming.filter { $0.type != .manual }
+            if scheduled.isEmpty {
                 emptyState
             } else {
                 VStack(spacing: 0) {
-                    ForEach(state.scheduleService.upcoming.prefix(6)) { up in
+                    ForEach(scheduled.prefix(6)) { up in
                         row(up)
                     }
                 }
@@ -37,7 +38,7 @@ struct UpcomingStripView: View {
             timeCell(up)
                 .frame(width: 90, alignment: .leading)
             VStack(alignment: .leading, spacing: 2) {
-                Text(up.type.rawValue)
+                Text(up.type.displayName)
                     .font(DS.sans(13, weight: .medium))
                     .foregroundStyle(DS.Ink.p1)
                 Text(subtitle(for: up.type))

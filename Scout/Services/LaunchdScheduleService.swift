@@ -57,10 +57,15 @@ final class LaunchdScheduleService: ObservableObject {
     nonisolated static func nextFires(
         from entries: [CalendarEntry],
         after now: Date,
-        limit: Int
+        limit: Int,
+        timeZone: TimeZone = .current
     ) -> [UpcomingRun] {
+        // launchd interprets StartCalendarInterval hours/minutes in the
+        // system's local timezone — when the user changes timezones, plists
+        // start firing relative to the new local time. Using `.current` here
+        // keeps the displayed times in sync with launchd's actual behavior.
         var cal = Calendar(identifier: .gregorian)
-        cal.timeZone = TimeZone(identifier: "America/New_York")!
+        cal.timeZone = timeZone
 
         var results: [UpcomingRun] = []
         var cursor = now
@@ -70,7 +75,7 @@ final class LaunchdScheduleService: ObservableObject {
                 nextFireForEntry(entry, after: cursor, calendar: cal).map { ($0, entry) }
             }
             guard let (soonest, entry) = upcomingFires.min(by: { $0.0 < $1.0 }) else { break }
-            let type = inferRunType(fromLabel: entry.label, date: soonest)
+            let type = inferRunType(fromLabel: entry.label, date: soonest, timeZone: timeZone)
             let iso = ISO8601DateFormatter()
             iso.formatOptions = [.withInternetDateTime]
             let upc = UpcomingRun(
@@ -102,13 +107,31 @@ final class LaunchdScheduleService: ObservableObject {
         )
     }
 
-    nonisolated private static func inferRunType(fromLabel label: String, date: Date) -> RunType {
+    nonisolated static func inferRunType(
+        fromLabel label: String,
+        date: Date,
+        timeZone: TimeZone = .current
+    ) -> RunType {
         var cal = Calendar(identifier: .gregorian)
-        cal.timeZone = TimeZone(identifier: "America/New_York")!
+        cal.timeZone = timeZone
         let hour = cal.component(.hour, from: date)
         let weekday = cal.component(.weekday, from: date)
         let isWeekend = (weekday == 1 || weekday == 7)
 
+        if label.contains("research") { return .research }
+        if label.contains("dreaming") {
+            if isWeekend && hour == 6 { return .dreamingWeekend6am }
+            if isWeekend && hour == 7 { return .dreamingWeekend7am }
+            return .dreamingNightly
+        }
+        if label.contains("consolidation") {
+            switch hour {
+            case ..<12: return .consolidation11am
+            case 12..<14: return .consolidation1pm
+            case 14..<18: return .consolidation5pm
+            default: return .consolidation7pm
+            }
+        }
         if label.contains("briefing") {
             if isWeekend { return .weekendBriefing }
             switch hour {
@@ -117,16 +140,26 @@ final class LaunchdScheduleService: ObservableObject {
             case 13: return .consolidation1pm
             case 17: return .consolidation5pm
             case 19: return .consolidation7pm
-            default: return .manual
+            // Out-of-slot briefings still belong to the briefing family —
+            // pick the closest schedule so the row stays meaningful instead
+            // of collapsing to the catch-all "manual" placeholder.
+            case ..<10: return .morningBriefing
+            case 10..<12: return .consolidation11am
+            case 12..<15: return .consolidation1pm
+            case 15..<18: return .consolidation5pm
+            default: return .consolidation7pm
             }
         }
-        if label.contains("consolidation") { return .consolidation7pm }
-        if label.contains("dreaming") {
-            if isWeekend && hour == 6 { return .dreamingWeekend6am }
-            if isWeekend && hour == 7 { return .dreamingWeekend7am }
-            return .dreamingNightly
+        // Final fallback: pick a reasonable type by hour. A scheduled run
+        // should never display as "manual" — manual is reserved for runs the
+        // user kicks off explicitly via Run-now.
+        if isWeekend && hour < 12 { return .weekendBriefing }
+        switch hour {
+        case ..<10: return .morningBriefing
+        case 10..<14: return .consolidation11am
+        case 14..<18: return .consolidation5pm
+        default: return .consolidation7pm
         }
-        return .manual
     }
 
     private func recompute() {

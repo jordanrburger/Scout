@@ -10,6 +10,9 @@ final class GitService: @unchecked Sendable {
     }
 
     /// List commits in the given time range whose subject starts with `prefix`.
+    /// An empty `prefix` means "no subject filter" — return all commits in
+    /// the window. This is what `Run.commits(for:)` falls back to for `.manual`
+    /// runs, where we don't know which family the user invoked.
     func commits(
         between start: Date,
         and end: Date,
@@ -61,7 +64,7 @@ final class GitService: @unchecked Sendable {
                 let parts = line.components(separatedBy: "\u{1E}")
                 guard parts.count == 4 else { i += 1; continue }
                 let sha = parts[0], short = parts[1], ts = parts[2], subject = parts[3]
-                if !subject.hasPrefix(prefix) { i += 1; continue }
+                if !prefix.isEmpty && !subject.hasPrefix(prefix) { i += 1; continue }
                 let date = Date(timeIntervalSince1970: TimeInterval(ts) ?? 0)
                 var filesChanged = 0, insertions = 0, deletions = 0
                 if i + 1 < lines.count {

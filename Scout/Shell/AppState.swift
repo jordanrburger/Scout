@@ -19,6 +19,7 @@ final class AppState: ObservableObject {
     let gitService: GitService
     let runnerService: RunnerService
     let notificationService: NotificationService
+    let claudeSessionService: ClaudeSessionService
 
     // New Action Items services
     let actionItemsDocumentService: ActionItemsDocumentService
@@ -69,6 +70,10 @@ final class AppState: ObservableObject {
         )
         let runnerSvc = RunnerService(scoutDirectory: scoutDir, runner: runner)
         let notif = NotificationService()
+        let ccSessions = ClaudeSessionService(
+            projectsDirectory: ClaudeSessionService
+                .defaultScoutSessionsDirectory(scoutDirectory: scoutDir)
+        )
 
         let docService = ActionItemsDocumentService(directory: actionItemsDir, fileEvents: watcher)
         let writerActor = ActionItemsWriter(
@@ -91,6 +96,7 @@ final class AppState: ObservableObject {
         self.scheduleEditorService = editor
         self.runnerService = runnerSvc
         self.notificationService = notif
+        self.claudeSessionService = ccSessions
         self.actionItemsDocumentService = docService
         self.actionItemsWriterBox = writerBox
         self.actionItemsEnvState = envState

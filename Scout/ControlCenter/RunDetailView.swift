@@ -11,19 +11,25 @@ struct RunDetailView: View {
         VStack(alignment: .leading, spacing: 12) {
             header
             TabView {
+                SummaryTab(logPath: run.logPath)
+                    .tabItem { Label("Summary", systemImage: "text.alignleft") }
                 LogViewer(logPath: run.logPath)
-                    .tabItem { Label("Log", systemImage: "text.alignleft") }
+                    .tabItem { Label("Log", systemImage: "doc.text") }
                 DiffViewer(commits: resolvedCommits)
                     .tabItem { Label("Diff", systemImage: "arrow.triangle.branch") }
+                FilesTab(run: run)
+                    .tabItem { Label("Files", systemImage: "folder") }
+                ToolsTab(run: run)
+                    .tabItem { Label("Tools", systemImage: "wrench.and.screwdriver") }
                 ErrorsTab(errors: run.errorsDetected)
                     .tabItem { Label("Errors", systemImage: "exclamationmark.triangle") }
-                MetadataTab(run: run)
-                    .tabItem { Label("Raw", systemImage: "curlybraces") }
+                FeedbackTab(run: run)
+                    .tabItem { Label("Feedback", systemImage: "bubble.left.and.bubble.right") }
             }
             actionBar
         }
         .padding()
-        .navigationTitle(run.type.rawValue)
+        .navigationTitle(run.displayName)
         .task(id: run.id) {
             // Resolve commits lazily on run selection to keep launch fast.
             resolvedCommits = await state.sessionLogService.commits(for: run)
@@ -31,22 +37,60 @@ struct RunDetailView: View {
     }
 
     private var header: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(run.type.rawValue).font(.title2).fontWeight(.bold)
-            HStack(spacing: 16) {
-                Text(run.status.rawValue)
-                    .foregroundStyle(run.status == .success ? .green : .red)
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                Text(run.displayName).font(.title2).fontWeight(.bold)
+                if run.wasManuallyTriggered && run.type != .manual {
+                    Text("manual")
+                        .font(.caption.monospaced())
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Color.secondary.opacity(0.15), in: RoundedRectangle(cornerRadius: 4))
+                        .foregroundStyle(.secondary)
+                }
+            }
+            HStack(spacing: 14) {
+                statusPill
                 Text("Started \(run.startedAt.formatted(date: .abbreviated, time: .shortened))")
-                if let c = run.cost { Text("Cost: $\(c as NSDecimalNumber)") }
-                if let e = run.exitCode { Text("Exit \(e)") }
+                if let end = run.endedAt {
+                    Text("· Ended \(end.formatted(date: .omitted, time: .shortened))")
+                }
+                if let exit = run.exitCode {
+                    Text("· Exit \(exit)")
+                }
+                if let cost = run.cost {
+                    Text("· Cost $\(cost as NSDecimalNumber)")
+                }
+                if !run.commits.isEmpty || !resolvedCommits.isEmpty {
+                    let n = max(run.commits.count, resolvedCommits.count)
+                    Text("· \(n) commit\(n == 1 ? "" : "s")")
+                }
             }
             .font(.caption)
             .foregroundStyle(.secondary)
         }
     }
 
+    private var statusPill: some View {
+        HStack(spacing: 5) {
+            Circle().fill(statusColor).frame(width: 6, height: 6)
+            Text(run.status.rawValue)
+                .font(.caption.monospaced())
+                .foregroundStyle(statusColor)
+        }
+    }
+
+    private var statusColor: Color {
+        switch run.status {
+        case .success: return .green
+        case .failure, .timeout, .rateLimited: return .red
+        case .running: return .orange
+        default: return .secondary
+        }
+    }
+
     private var actionBar: some View {
-        HStack {
+        HStack(spacing: 8) {
             Button("Retry") { confirmRetry = true }
                 .disabled(run.status == .running)
             Button("Open log file") {
@@ -55,9 +99,10 @@ struct RunDetailView: View {
             Button("Reveal in Finder") {
                 NSWorkspace.shared.activateFileViewerSelecting([run.logPath])
             }
+            Spacer()
         }
         .confirmationDialog(
-            "Retry \(run.type.rawValue)?",
+            "Retry \(run.displayName)?",
             isPresented: $confirmRetry,
             titleVisibility: .visible
         ) {

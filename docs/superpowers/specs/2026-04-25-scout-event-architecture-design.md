@@ -128,6 +128,21 @@ Append-mostly logs cannot rewrite history; instead, errors and schema changes ar
 
 The dispatcher updates `superseded_by` on the targeted row when applying the tombstone. Replay skips superseded rows. Schema migrations emit tombstones for old-shape events alongside new-shape replacements; projections rebuild from the corrected sequence. Tombstones are themselves part of the audit trail and never deleted.
 
+### Schedule events
+
+The schedule dispatcher (`scoutctl schedule tick`, introduced in Plan 5 / `2026-05-04-schedule-v2-design.md`) emits four canonical event kinds. Every tick — whether a normal 5-minute heartbeat or a wake-from-sleep catch-up — produces at least one `schedule.tick.completed` and zero or more per-slot events:
+
+| Kind | Source | Payload fields | When emitted |
+|---|---|---|---|
+| `slot.fired` | `cli:schedule_tick` | `slot_key`, `slot_type`, `target_local`, `target_utc`, `runner`, `pid_spawned` | The dispatcher spawned the runner subprocess for this slot |
+| `slot.skipped` | `cli:schedule_tick` | `slot_key`, `slot_type`, `target_local`, `reason` | The slot was due but skipped; `reason ∈ {on_miss=skip, collapsed-into=<key>, stale-after-window, cooldown_active, laptop-asleep}` |
+| `slot.fire_failed` | `cli:schedule_tick` | `slot_key`, `slot_type`, `target_local`, `error` | Subprocess spawn failed (runner script missing, lock contention, etc.) |
+| `schedule.tick.completed` | `cli:schedule_tick` | `fired: [slot_key,...]`, `skipped: [...]`, `duration_ms` | Every tick, after all per-slot evaluations |
+
+The `slot.skipped` `reason` field is load-bearing: connector-health-report distinguishes `laptop-asleep` skips from real connector outages (no false-positive Slack-dark alerts on a Monday morning that follows a closed-laptop weekend).
+
+In v0.4 these emit through the existing JSONL writer the hooks use; in v0.5+ they flow through `emit()` into the SQLite event store like every other event, picked up by projections (the run-tracker projection updates `last_fire_ts`; a future "missed-runs" projection feeds scout-app's "you missed X runs while traveling" indicator).
+
 ### Connector
 
 A worker process that bridges an external source ↔ the event store. Connectors are **bidirectional** — they own both inbound (external → events) and outbound (events → external) for one source. A "Telegram connector" both ingests user messages (via webhook) and sends responses (via Bot API). API keys, rate-limiting, and retry logic stay contained in one process per source.
@@ -302,9 +317,9 @@ Scout treats the user as an **authoritative information source** that responds a
 
 ### Async-first user comms
 
-**Multi-channel notification fan-out.** Every notification carries a `(mode, tier)` tuple: mode is which session produced it (briefing / consolidation / dreaming / research / work), tier is `informational` or `action_required`. Per-tuple channel routing is configured in `connectors.yaml`. Examples:
+**Multi-channel notification fan-out.** Every notification carries a `(slot_type, tier)` tuple: `slot_type` is the type of session that produced it (`briefing` / `consolidation` / `dreaming` / `research` / `manual`), tier is `informational` or `action_required`. Per-tuple channel routing is configured in `connectors.yaml`. Routing rules key on slot **type** (the small, fixed plugin vocabulary), not on slot **key** (which is user-chosen and varies per user); see Plan 5 / `2026-05-04-schedule-v2-design.md` for the slot key vs type distinction. Examples:
 
-| Mode | Tier | Channels | Notification style |
+| Slot type | Tier | Channels | Notification style |
 |---|---|---|---|
 | briefing | informational | Slack DM (silent), Telegram bot DM (silent) | Run summary, no push sound |
 | briefing | action_required | Slack DM, Telegram DM (loud), Email | Sound + 🔴 prefix; surfaces in lock-screen previews |

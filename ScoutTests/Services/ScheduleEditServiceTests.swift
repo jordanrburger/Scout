@@ -201,6 +201,52 @@ struct ScheduleEditServiceTests {
         let tmps = contents.filter { $0.lastPathComponent.contains(".tmp") }
         #expect(tmps == [], "tmpfile leaked after success: \(tmps)")
     }
+
+    @Test("save preserves header comments byte-for-byte")
+    @MainActor
+    func test_save_preserves_header_comments_byte_for_byte() async throws {
+        let (service, _, dir) = try makeServiceOnDisk()
+        try await service.loadAll()
+
+        let canonical = dir.appendingPathComponent("schedule.yaml")
+        let beforeText = try String(contentsOf: canonical, encoding: .utf8)
+        // The seed has two header comment lines + a `schema_version: 1` line.
+        let beforeHeader = beforeText.components(separatedBy: "\nslots:").first ?? ""
+        #expect(beforeHeader.contains("# Header comment — line 1"))
+        #expect(beforeHeader.contains("schema_version: 1"))
+
+        try await service.save(allSlots: service.slots)
+        let afterText = try String(contentsOf: canonical, encoding: .utf8)
+        let afterHeader = afterText.components(separatedBy: "\nslots:").first ?? ""
+        #expect(afterHeader == beforeHeader, "header should survive byte-for-byte")
+    }
+
+    @Test("save falls back to header-less emit when canonical has no slots: anchor")
+    @MainActor
+    func test_save_falls_back_to_pure_yaml_when_no_slots_anchor() async throws {
+        // Seed a malformed file (no `\nslots:` line). save still produces
+        // valid YAML via the header-less hand-rolled emit path.
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("schedule-edit-test-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let canonical = dir.appendingPathComponent("schedule.yaml")
+        try "not valid yaml at all".write(to: canonical, atomically: true, encoding: .utf8)
+
+        // Two queued list-stdouts: initial loadAll + post-save reload.
+        let runner = QueueProcessRunner(stdouts: [sampleListJSON, sampleListJSON])
+        let service = ScheduleEditService(
+            scoutctl: URL(fileURLWithPath: "/usr/bin/env"),
+            runner: runner,
+            canonicalSchedulePath: canonical,
+            argumentsPrefix: ["scoutctl"]
+        )
+        try await service.loadAll()
+        try await service.save(allSlots: service.slots)
+
+        let afterText = try String(contentsOf: canonical, encoding: .utf8)
+        #expect(afterText.contains("schema_version"))
+        #expect(afterText.contains("morning-briefing"))
+    }
 }
 
 /// FIFO-stdouts ProcessRunner test stub. Mirrors the pattern used in

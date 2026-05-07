@@ -55,8 +55,18 @@ final class ScheduleEditService: ObservableObject {
             throw StaleScheduleError(loadedAt: loaded, modifiedAt: live)
         }
 
-        // 2. Compose YAML — Task 7 adds header preservation. For now, pure emit.
-        let body = serializeSlotsToYAML(allSlots)
+        // 2. Compose YAML with header preservation (Task 7).
+        // extractHeader reads everything before `\nslots:` from the canonical
+        // file. On failure (missing file, no anchor) we fall back to the
+        // header-less hand-rolled emit — better to lose the header than refuse
+        // to save.
+        let header = (try? extractHeader(from: canonicalSchedulePath)) ?? ""
+        let body: String
+        if header.isEmpty {
+            body = serializeSlotsToYAML(allSlots)
+        } else {
+            body = header + "\nslots:\n" + serializeSlotsToYAMLBody(allSlots)
+        }
 
         // 3. Tmpfile in same directory; defer guarantees cleanup on every exit path.
         let tmp = canonicalSchedulePath
@@ -98,11 +108,23 @@ final class ScheduleEditService: ObservableObject {
     /// Serialize slot array to a YAML string matching the engine's expected
     /// shape: top-level `schema_version: 1` then `slots:` mapping. Insertion
     /// order is preserved because we emit slots in the array's order.
-    /// Header preservation (comments above `schema_version`) is deferred to
-    /// Task 7 — for now we emit a plain YAML body.
+    /// Used as the header-less fallback path (Task 6) and when no `\nslots:`
+    /// anchor is found in the canonical file.
     private func serializeSlotsToYAML(_ slots: [Slot]) -> String {
         var out = "schema_version: 1\n"
         out += "slots:\n"
+        out += serializeSlotsToYAMLBody(slots)
+        return out
+    }
+
+    /// Compose ONLY the indented slot blocks (no `schema_version:`, no `slots:`
+    /// opener). Used by the header-preservation path (Task 7) so the canonical
+    /// file's existing `schema_version: 1` + `slots:` line are not duplicated.
+    ///
+    /// Field order, indentation, and quoting exactly match the full emitter
+    /// above — these two functions share the same slot-emit logic.
+    private func serializeSlotsToYAMLBody(_ slots: [Slot]) -> String {
+        var out = ""
         for slot in slots {
             out += "  \(slot.key):\n"
             out += "    type: \(slot.type.rawValue)\n"
@@ -121,6 +143,23 @@ final class ScheduleEditService: ObservableObject {
             out += "    runtime: \(slot.runtime.rawValue)\n"
         }
         return out
+    }
+
+    /// Read the canonical file and capture everything from start of file up to
+    /// (but not including) the `\nslots:` line. Returns "" if the file doesn't
+    /// exist or has no anchor — caller falls back to a header-less emit.
+    ///
+    /// Spec §7.2: header-only preservation. Inline slot-block comments are NOT
+    /// preserved by this approach; that's an explicit tradeoff to avoid
+    /// byte-stream splicing fragility.
+    private func extractHeader(from path: URL) throws -> String {
+        let raw = try String(contentsOf: path, encoding: .utf8)
+        // Split on the literal `\nslots:` sequence. If the anchor is present,
+        // parts[0] is everything before it (the header). If absent, the array
+        // has exactly one element and we fall back by returning "".
+        let parts = raw.components(separatedBy: "\nslots:")
+        guard parts.count > 1 else { return "" }
+        return parts[0]
     }
 
     /// Emit a YAML scalar — quote it if it contains characters that would

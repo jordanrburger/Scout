@@ -184,3 +184,39 @@ struct EditorialRule: View {
         Rectangle().fill(color).frame(height: 0.5)
     }
 }
+
+// MARK: - Slot-type color palette
+
+extension DS {
+    /// Slot-type color palette. Distinct from `DS.Accent.fill` (orange `+ New`)
+    /// and from `DS.Priority.*` (action-item urgency axis).
+    enum SlotType {
+        /// Briefing — warm amber.
+        static let briefing      = Color(fallbackLight: .sRGB(0.860, 0.660, 0.180, 1),
+                                         fallbackDark:  .sRGB(0.910, 0.760, 0.340, 1))
+        /// Consolidation — desaturated steel blue.
+        static let consolidation = Color(fallbackLight: .sRGB(0.400, 0.580, 0.760, 1),
+                                         fallbackDark:  .sRGB(0.520, 0.700, 0.870, 1))
+        /// Dreaming — quiet violet.
+        static let dreaming      = Color(fallbackLight: .sRGB(0.560, 0.460, 0.760, 1),
+                                         fallbackDark:  .sRGB(0.700, 0.620, 0.880, 1))
+        /// Research — sage green.
+        static let research      = Color(fallbackLight: .sRGB(0.420, 0.620, 0.420, 1),
+                                         fallbackDark:  .sRGB(0.520, 0.740, 0.540, 1))
+        /// Manual — matched-chroma neutral; manual slots have no fixed
+        /// cadence and shouldn't compete visually with the four colored types.
+        static let manual        = Color(fallbackLight: .sRGB(0.620, 0.620, 0.640, 1),
+                                         fallbackDark:  .sRGB(0.520, 0.520, 0.535, 1))
+
+        /// Convenience lookup. Used by every cell that renders a type-tinted dot.
+        static func color(for type: Scout.SlotType) -> Color {
+            switch type {
+            case .briefing:      return briefing
+            case .consolidation: return consolidation
+            case .dreaming:      return dreaming
+            case .research:      return research
+            case .manual:        return manual
+            }
+        }
+    }
+}

@@ -372,7 +372,10 @@ $SCOUT_DATA_DIR/
 │   ├── connector-alerts-acked.json
 │   └── session-context/
 ├── .scout-state/               (persistent state; engine-writable)
-│   └── schema-version
+│   ├── schema-version
+│   ├── id-map.json             (stable-prefix → ULID map; per §13.1)
+│   ├── schedule.yaml           (slot definitions; per §11 schedule sub-section + 2026-05-04 spec)
+│   └── .schedule-tick.lock     (fcntl lock for the dispatcher)
 ├── knowledge-base/             (user-owned; relational context source)
 │   ├── ontology/schema.yaml    (optional user override)
 │   ├── people/
@@ -883,6 +886,18 @@ The same split applies to **connector phase content** (`scout-plugin/phases/conn
 
 Pre-commit check (added to `scout-plugin` lint workflow when Plan 5 lands):
 grep `scout-plugin/phases/` for proper-noun matches against a denylist seeded from the user's `people.md` + `channels.md` and fail if any appear. v0.4 enforces the rule by convention; v0.5+ enforces by lint.
+
+### Schedule definition lives in the vault
+
+Same plugin/vault split applies to **schedule data** (when each slot fires, what runner it invokes, how it behaves on miss). The plugin ships generic defaults; the vault holds the user's instantiation; the engine validates the contract.
+
+- **Plugin ships generic defaults** at `engine/scout/defaults/schedule.yaml` — describe a reasonable initial schedule (briefing in the morning, several consolidation passes through the day, evening dreaming) without inlining anything user-specific. Slot wall-clock times in the defaults are reasonable starting points; users edit them after `scoutctl schedule init` seeds the vault.
+- **Vault holds the user's schedule** at `~/Scout/.scout-state/schedule.yaml`. Slot keys are user-chosen identifiers; slot types come from a fixed plugin vocabulary (`briefing | consolidation | dreaming | research | manual`). Aggregation surfaces in the plugin (`connectors.yaml` `required_in_types`, alerting rollup buckets) reference the *types*, not the keys, so user renames don't break alerts.
+- **TZ-aware by construction.** Slot wall-clock times are interpreted in the system's current local timezone — when the user travels, the schedule moves with them. Optional per-slot `tz:` field for users who explicitly want a slot anchored to a fixed IANA zone.
+- **Engine owns the dispatcher.** A 5-minute launchd plist (`com.scout.schedule-tick.plist`, the only new launchd plist Plan 5 adds) drives `scoutctl schedule tick`, which evaluates due slots against the tracker, applies per-slot `on_miss` policy, and invokes the runner. Sleep gaps are caught up on the next tick — same code path. Scout-app becomes a read-only UI mirror that consults `scoutctl schedule list-upcoming --json`; its previous `RunnerService` is deleted.
+- **Forward-looking overlay (deferred).** A per-user `<vault>/.scout-state/schedule.local.yaml` overlay file may extend or override individual slots without rewriting the canonical defaults. v0.5 ships the canonical-only path; the overlay loader can be added additively later if needed.
+
+Full design and implementation plan: `2026-05-04-schedule-v2-design.md`. The schedule data contract here is the v0.4 commitment; Plan 5 lands the implementation.
 
 ### Ordered task list (Step 5 of Jordan's migration)
 

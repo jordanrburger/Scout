@@ -128,6 +128,21 @@ Append-mostly logs cannot rewrite history; instead, errors and schema changes ar
 
 The dispatcher updates `superseded_by` on the targeted row when applying the tombstone. Replay skips superseded rows. Schema migrations emit tombstones for old-shape events alongside new-shape replacements; projections rebuild from the corrected sequence. Tombstones are themselves part of the audit trail and never deleted.
 
+### Schedule events
+
+The schedule dispatcher (`scoutctl schedule tick`, introduced in Plan 5 / `2026-05-04-schedule-v2-design.md`) emits four canonical event kinds. Every tick — whether a normal 5-minute heartbeat or a wake-from-sleep catch-up — produces at least one `schedule.tick.completed` and zero or more per-slot events:
+
+| Kind | Source | Payload fields | When emitted |
+|---|---|---|---|
+| `slot.fired` | `cli:schedule_tick` | `slot_key`, `slot_type`, `target_local`, `target_utc`, `runner`, `pid_spawned` | The dispatcher spawned the runner subprocess for this slot |
+| `slot.skipped` | `cli:schedule_tick` | `slot_key`, `slot_type`, `target_local`, `reason` | The slot was due but skipped; `reason ∈ {on_miss=skip, collapsed-into=<key>, stale-after-window, cooldown_active, laptop-asleep, network-offline}` |
+| `slot.fire_failed` | `cli:schedule_tick` | `slot_key`, `slot_type`, `target_local`, `error` | Subprocess spawn failed (runner script missing, lock contention, etc.) |
+| `schedule.tick.completed` | `cli:schedule_tick` | `fired: [slot_key,...]`, `skipped: [...]`, `duration_ms` | Every tick, after all per-slot evaluations |
+
+The `slot.skipped` `reason` field is load-bearing: connector-health-report distinguishes `laptop-asleep` skips from real connector outages (no false-positive Slack-dark alerts on a Monday morning that follows a closed-laptop weekend).
+
+In v0.4 these emit through the existing JSONL writer the hooks use; in v0.5+ they flow through `emit()` into the SQLite event store like every other event, picked up by projections (the run-tracker projection updates `last_fire_ts`; a future "missed-runs" projection feeds scout-app's "you missed X runs while traveling" indicator).
+
 ### Connector
 
 A worker process that bridges an external source ↔ the event store. Connectors are **bidirectional** — they own both inbound (external → events) and outbound (events → external) for one source. A "Telegram connector" both ingests user messages (via webhook) and sends responses (via Bot API). API keys, rate-limiting, and retry logic stay contained in one process per source.
@@ -302,9 +317,9 @@ Scout treats the user as an **authoritative information source** that responds a
 
 ### Async-first user comms
 
-**Multi-channel notification fan-out.** Every notification carries a `(mode, tier)` tuple: mode is which session produced it (briefing / consolidation / dreaming / research / work), tier is `informational` or `action_required`. Per-tuple channel routing is configured in `connectors.yaml`. Examples:
+**Multi-channel notification fan-out.** Every notification carries a `(slot_type, tier)` tuple: `slot_type` is the type of session that produced it (`briefing` / `consolidation` / `dreaming` / `research` / `manual`), tier is `informational` or `action_required`. Per-tuple channel routing is configured in `connectors.yaml`. Routing rules key on slot **type** (the small, fixed plugin vocabulary), not on slot **key** (which is user-chosen and varies per user); see Plan 5 / `2026-05-04-schedule-v2-design.md` for the slot key vs type distinction. Examples:
 
-| Mode | Tier | Channels | Notification style |
+| Slot type | Tier | Channels | Notification style |
 |---|---|---|---|
 | briefing | informational | Slack DM (silent), Telegram bot DM (silent) | Run summary, no push sound |
 | briefing | action_required | Slack DM, Telegram DM (loud), Email | Sound + 🔴 prefix; surfaces in lock-screen previews |
@@ -323,6 +338,14 @@ Examples of opportunistic questions:
 The user replies async via whichever channel they prefer; the next scheduled run picks up the reply via the connector's inbound listener and updates the KG. **The N cap is the throttle**: never overwhelming, always making forward progress on graph quality. Calibrate `N` per user engagement style; some users will tolerate 5/run, others need 1/week.
 
 **Multi-conversation context preservation.** Multiple parallel async threads stay distinct via durable thread/channel IDs. Scout never loses context between a question fired Tuesday morning and the answer received Wednesday evening. Each open question is an event in the store with `kind: scout.question.asked`; the matching reply (when received) is `kind: scout.question.answered` with the source event ID in payload.
+
+**Reply-binding via platform quote/thread features.** When Scout fires multiple questions in one wrap-up message (`N` up to 5 per run depending on user calibration), the inbound connector cannot disambiguate user replies by content — *"she's on the design team"* could plausibly answer any of three "who is X?" questions in the same thread. The disambiguation contract is **the platform's native reply primitive**:
+
+- **Telegram inbound connector.** When emitting `scout.question.asked`, the outbound side records the Telegram message ID returned by `sendMessage`. The inbound webhook handler reads `update.message.reply_to_message.message_id` on incoming user messages; if present, looks up the matching `scout.question.asked` event by message ID; emits `scout.question.answered` with `source_question_id: <ulid>` filled. If absent (the user replied in the thread without quoting), the connector emits `scout.message.received` with no question binding and the next session's planner classifies whether to interpret it as a question answer (with explicit ambiguity disclosure) or a free-form note.
+- **Slack inbound connector.** Same pattern using `thread_ts` (the parent message timestamp) — Slack's "Reply in thread" preserves the parent linkage. Each `scout.question.asked` records the Slack `ts` of the outbound message; inbound replies to that `ts` bind unambiguously.
+- **Email inbound.** Standard `In-Reply-To` / `References` headers carry the binding.
+
+The user-facing implication: when Scout asks two or three questions in one DM, the user must use the platform's "Reply" / "Quote" feature on the specific question they're answering, not just send a free-form follow-up. The wrap-up message text instructs users to do this on first encounter ("To answer, tap the question and reply / quote-reply"), and `connectors.yaml` includes the canonical instruction string per platform so it stays consistent across runs. Free-form replies stay parseable but with a flagged ambiguity that the next session's planner resolves, possibly by re-asking with a single explicit question if confidence is low.
 
 ### Interactive escalation (when async isn't enough)
 

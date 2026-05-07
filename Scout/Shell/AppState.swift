@@ -14,12 +14,18 @@ final class AppState: ObservableObject {
     let sessionTokensService: SessionTokensService
     let connectorHealthService: ConnectorHealthService
     let sessionLogService: SessionLogService
-    let scheduleService: LaunchdScheduleService
+    let scheduleService: ScheduleService
+    let powerStateService: PowerStateService
     let scheduleEditorService: ScheduleEditorService
     let gitService: GitService
-    let runnerService: RunnerService
     let notificationService: NotificationService
     let claudeSessionService: ClaudeSessionService
+
+    // Process runner kept at app level so fire-now shell-outs (UpcomingStripView,
+    // RunDetailView, MenuBarExtraContent) can invoke `scoutctl schedule fire-now`
+    // without each consumer constructing its own runner.
+    let runner: any ProcessRunner
+    let scoutctlExecutable: URL
 
     // New Action Items services
     let actionItemsDocumentService: ActionItemsDocumentService
@@ -58,7 +64,22 @@ final class AppState: ObservableObject {
             gitService: git,
             fileEvents: watcher
         )
-        let sched = LaunchdScheduleService(fileEvents: watcher)
+        // Plan 5: scout-app no longer dispatches launchd plists. ScheduleService
+        // polls `scoutctl schedule list-upcoming --json` every 60 s and renders
+        // the upcoming-runs strip. Fire-now goes through `scoutctl schedule
+        // fire-now <slot-key>` via the shared `runner`.
+        //
+        // `/usr/bin/env scoutctl` lets us resolve scoutctl via $PATH instead of
+        // pinning to a conda/homebrew install path that may shift between
+        // machines. Mirrors the ActionItemsWriter `python3` invocation pattern.
+        let scoutctlExe = URL(fileURLWithPath: "/usr/bin/env")
+        let scoutctlArgsPrefix = ["scoutctl"]
+        let sched = ScheduleService(
+            scoutctl: scoutctlExe,
+            runner: runner,
+            argumentsPrefix: scoutctlArgsPrefix
+        )
+        let power = PowerStateService(runner: runner)
         let editor = ScheduleEditorService(
             repoDirectory: scoutDir.appendingPathComponent("launchd"),
             agentsDirectory: FileManager.default.homeDirectoryForCurrentUser
@@ -68,7 +89,6 @@ final class AppState: ObservableObject {
             git: git,
             fileEvents: watcher
         )
-        let runnerSvc = RunnerService(scoutDirectory: scoutDir, runner: runner)
         let notif = NotificationService()
         let ccSessions = ClaudeSessionService(
             projectsDirectory: ClaudeSessionService
@@ -93,8 +113,8 @@ final class AppState: ObservableObject {
         self.connectorHealthService = connectorHealth
         self.sessionLogService = logs
         self.scheduleService = sched
+        self.powerStateService = power
         self.scheduleEditorService = editor
-        self.runnerService = runnerSvc
         self.notificationService = notif
         self.claudeSessionService = ccSessions
         self.actionItemsDocumentService = docService
@@ -102,15 +122,24 @@ final class AppState: ObservableObject {
         self.actionItemsEnvState = envState
         self.scoutDirectory = scoutDir
         self.actionItemsDirectory = actionItemsDir
+        self.runner = runner
+        self.scoutctlExecutable = scoutctlExe
 
         Task { [weak self] in
             _ = try? await tracker.loadInitial()
             _ = try? await tokens.loadInitial()
             _ = try? await connectorHealth.loadInitial()
             _ = try? await logs.loadInitial()
-            await MainActor.run { sched.loadInitial() }
-            _ = try? await editor.loadAll()
-            await MainActor.run { editor.startWatching() }
+            await MainActor.run {
+                sched.start()
+                power.start()
+            }
+            // Plan 5: Schedules tab is hidden pending Plan 6 rewrite (see
+            // SchedulesView placeholder). Skip both loadAll and startWatching
+            // so the FileWatcher doesn't thrash on burst plist deletions
+            // (the symptom that froze the UI when 14 legacy plists were
+            // removed in one batch). Restore both calls when Plan 6 lands
+            // a schedule.yaml editor.
             await self?.recomputeMenuStatus()
 
             // Run environment check; publish result.
@@ -124,6 +153,28 @@ final class AppState: ObservableObject {
         }
 
         startNotificationWatch()
+    }
+
+    /// Shells out to `scoutctl schedule fire-now <slotKey>`, optionally
+    /// bypassing the engine's daily-spend gate via `--bypass-budget`.
+    ///
+    /// Plan 5 removed in-app dispatch — the engine now owns slot routing,
+    /// scout-app just shells out. Errors are swallowed for parity with the
+    /// old `runnerService.runNow` (which also returned `try? await`).
+    ///
+    /// `bypassBudget: true` is used by `RunDetailView` for the "force retry"
+    /// path — a manual override that lets a slot fire even when the day's
+    /// budget has already been spent. Default `false` for normal upcoming-strip
+    /// run-now buttons (which respect the budget gate).
+    func fireNow(slotKey: String, bypassBudget: Bool = false) async {
+        var args = ["scoutctl", "schedule", "fire-now", slotKey]
+        if bypassBudget { args.append("--bypass-budget") }
+        _ = try? await runner.run(
+            executable: scoutctlExecutable,
+            arguments: args,
+            environment: [:],
+            workingDirectory: scoutDirectory
+        )
     }
 
     func recomputeMenuStatus() async {

@@ -5,7 +5,30 @@ struct SchedulesView: View {
     @State private var selection: Schedule.ID? = nil
     @State private var isShowingNewSheet = false
 
+    // Plan 5 scope gap: this view was built around editing per-slot launchd
+    // plists (com.scout.briefing.plist etc.). Plan 5 collapsed those plists
+    // into a single com.scout.schedule-tick.plist that polls schedule.yaml,
+    // so the legacy editor model has nothing meaningful to display. Body
+    // replaced with a placeholder; the existing implementation (`legacyBody`,
+    // `list`, `commitErrorBanner`, `statusDot`) is retained so Plan 6's
+    // schedule.yaml editor can lift the table/sheet plumbing. See
+    // docs/superpowers/FOLLOWUPS.md "Plan 5 → Plan 6 — Schedules tab rewrite"
+    // for the full rebuild plan.
     var body: some View {
+        ContentUnavailableView {
+            Label("Schedule editor is being rebuilt", systemImage: "calendar.badge.clock")
+        } description: {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Plan 5 moved scheduling from per-slot launchd plists to a single dispatcher backed by ~/Scout/.scout-state/schedule.yaml.")
+                Text("The new editor lands in Plan 6. Until then, edit the YAML directly or use scoutctl schedule {list, show, validate, init} from the terminal.")
+                    .foregroundStyle(.secondary)
+            }
+            .multilineTextAlignment(.leading)
+            .frame(maxWidth: 520, alignment: .leading)
+        }
+    }
+
+    private var legacyBody: some View {
         NavigationSplitView {
             list
         } detail: {

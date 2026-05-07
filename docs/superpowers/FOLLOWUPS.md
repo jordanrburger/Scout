@@ -249,3 +249,87 @@ _(Move entries here as PRs close them. Format:
   build`, no-args help, and `main()` error dispatch (clean return,
   `ScoutError` forwarding, unexpected-exception mapping,
   `KeyboardInterrupt` and `SystemExit` propagation).
+
+## Plan 5 → Plan 6 carryforward — Schedules tab rewrite (important)
+
+### Background
+
+Plan 5 collapsed the per-slot launchd plist model
+(`com.scout.briefing.plist`, `com.scout.consolidation-7pm.plist`, etc. —
+8 separate plists, one per scheduled fire) into a single
+`com.scout.schedule-tick.plist` that runs the `scoutctl schedule tick`
+dispatcher every 5 minutes. The dispatcher reads slots from
+`~/Scout/.scout-state/schedule.yaml` and decides what to fire.
+
+Side-effect: the existing **Schedules** tab in scout-app — built around
+`ScheduleEditorService` reading/writing `~/Scout/launchd/com.scout.*.plist`
+files via `PlistIO` and a `FileWatcher` — is no longer aligned with how
+Scout schedules work. The data model it edits (label/runner/trigger per
+plist) has shrunk to two rows (heartbeat + schedule-tick), neither of
+which the user should be editing in this UI. Worse, the burst plist
+deletions during Plan 5 deployment caused the `FileWatcher` to thrash
+`loadAll` → `@Published` → SwiftUI render storm, freezing the app on
+sidebar transitions.
+
+### What Plan 5 did (interim)
+
+1. Hid `.schedules` from the sidebar in `Scout/Shell/SidebarView.swift`
+   (case kept in `SidebarItem` for state-restore compat).
+2. Replaced `SchedulesView.body` with a `ContentUnavailableView`
+   placeholder pointing at this followup. Existing implementation moved
+   to `legacyBody` + helpers (kept intact for Plan 6 reuse).
+3. Stopped calling `editor.loadAll()` and `editor.startWatching()` in
+   `AppState` so the FileWatcher doesn't run at all (avoids the render
+   storm on plist churn). `ScheduleEditorService` is still constructed
+   but unused.
+
+### What Plan 6 must do
+
+- **Rewrite `SchedulesView` against `schedule.yaml`.** Read slots via
+  `scoutctl schedule list` / `show <key>` (machine-parseable JSON
+  already exists). The tab should list each slot's
+  key/type/runner/fires_at_local/weekdays/on_miss/cooldown_minutes —
+  the same shape that `engine/scout/schedule.snapshot.json` exposes.
+- **Decide how editing works.** Two options:
+  - **Overlay file** at `~/Scout/.scout-state/schedule.local.yaml`. The
+    loader already supports an overlay (see `scout.schedule.load_schedule`
+    `overlay` parameter). The editor writes a per-slot diff into the
+    overlay; `scoutctl schedule reload` picks it up. Non-destructive —
+    the canonical `schedule.yaml` is untouched, easy to revert.
+  - **Direct edit** of `~/Scout/.scout-state/schedule.yaml`. Simpler, but
+    drops the "user customization on top of plugin defaults" pattern.
+  Recommend the overlay path; it's already wired in the loader.
+- **Validation feedback.** Reuse `scoutctl schedule validate` (already
+  exists) for save-time correctness checking. Surface errors inline.
+- **Run-now from the editor.** Each row should have a "Fire now" button
+  that calls `AppState.fireNow(slotKey:bypassBudget:)` (the same helper
+  the Control Center upcoming strip uses). `RunDetailView` and
+  `MenuBarExtraContent` already use this pattern.
+- **Drop `ScheduleEditorService`** and its `Plist`/`Schedule` types
+  from `Scout/Models`/`Scout/Services` once the rewrite ships. Also
+  drop `Scout/Schedules/{ScheduleDetailView,NewScheduleSheet}.swift`
+  and the helper functions in `legacyBody` of `SchedulesView`. The
+  `SidebarItem.schedules` case should re-enter the visible sidebar
+  in `SidebarView`.
+- **Lift `ScheduleService`'s ProcessRunner pattern.** The new editor
+  service should also accept `runner: any ProcessRunner` + `scoutctl: URL`
+  via init (mirroring `ScheduleService`) so it's testable without
+  shelling out for real.
+
+### What NOT to drop yet
+
+`ScheduleDiff.swift`, `PlistIO.swift`, `ScheduleTriggerFormatter.swift`,
+`SystemLaunchctlClient.swift` — these still serve `com.scout.heartbeat`
+and `com.scout.schedule-tick` editing/inspection. The Plan 4-supplement
+heartbeat redesign may want them. Audit during Plan 6, but don't
+preemptively delete.
+
+### Test coverage to add in Plan 6
+
+Today's `ScheduleEditorServiceTests` (Plist round-trip + drift detection)
+will need to be replaced by tests against the new YAML editor. The
+`PlistIO`/`ScheduleDiff` test files can stay if those types survive (see
+above). Build a `MockProcessRunner` queue stub that returns canned
+JSON for `scoutctl schedule list` / `show` / `validate` — the pattern
+landed in `ScoutTests/Services/ScheduleServiceTests.swift` is the
+template.

@@ -134,8 +134,12 @@ final class AppState: ObservableObject {
                 sched.start()
                 power.start()
             }
-            _ = try? await editor.loadAll()
-            await MainActor.run { editor.startWatching() }
+            // Plan 5: Schedules tab is hidden pending Plan 6 rewrite (see
+            // SchedulesView placeholder). Skip both loadAll and startWatching
+            // so the FileWatcher doesn't thrash on burst plist deletions
+            // (the symptom that froze the UI when 14 legacy plists were
+            // removed in one batch). Restore both calls when Plan 6 lands
+            // a schedule.yaml editor.
             await self?.recomputeMenuStatus()
 
             // Run environment check; publish result.

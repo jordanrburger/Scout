@@ -105,6 +105,20 @@ final class ScheduleEditService: ObservableObject {
         try await loadAll()
     }
 
+    /// Delete a slot by key and persist via the same atomic-write path as save.
+    /// Throws if the key isn't in the current slot list.
+    func delete(slotKey: String) async throws {
+        guard slots.contains(where: { $0.key == slotKey }) else {
+            throw NSError(
+                domain: "ScheduleEditService.delete",
+                code: 404,
+                userInfo: [NSLocalizedDescriptionKey: "no such slot: \(slotKey)"]
+            )
+        }
+        let remaining = slots.filter { $0.key != slotKey }
+        try await save(allSlots: remaining)
+    }
+
     /// Serialize slot array to a YAML string matching the engine's expected
     /// shape: top-level `schema_version: 1` then `slots:` mapping. Insertion
     /// order is preserved because we emit slots in the array's order.

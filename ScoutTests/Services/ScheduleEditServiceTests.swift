@@ -221,6 +221,33 @@ struct ScheduleEditServiceTests {
         #expect(afterHeader == beforeHeader, "header should survive byte-for-byte")
     }
 
+    @Test("delete removes slot and rewrites canonical")
+    @MainActor
+    func test_delete_removes_slot_and_rewrites_canonical() async throws {
+        let (service, _, dir) = try makeServiceOnDisk()
+        try await service.loadAll()
+
+        try await service.delete(slotKey: "research")
+
+        let canonical = dir.appendingPathComponent("schedule.yaml")
+        let written = try String(contentsOf: canonical, encoding: .utf8)
+        #expect(!written.contains("research:"), "research slot should be gone")
+        #expect(written.contains("morning-briefing:"), "morning-briefing should remain")
+    }
+
+    @Test("delete throws when key not found")
+    @MainActor
+    func test_delete_throws_when_key_not_found() async throws {
+        let (service, _, _) = try makeServiceOnDisk()
+        try await service.loadAll()
+        do {
+            try await service.delete(slotKey: "nonexistent")
+            Issue.record("expected throw")
+        } catch {
+            // Expected.
+        }
+    }
+
     @Test("save falls back to header-less emit when canonical has no slots: anchor")
     @MainActor
     func test_save_falls_back_to_pure_yaml_when_no_slots_anchor() async throws {

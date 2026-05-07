@@ -66,4 +66,12 @@ struct SlotEditFormTests {
         let draft = SlotDraft(from: Self.sampleSlot)
         #expect(draft.firstError == nil)
     }
+
+    @Test("requiresTypeChangeConfirmation triggers when draft.type != live.type")
+    func test_typeChange_triggers_confirmation_path() {
+        var draft = SlotDraft(from: Self.sampleSlot)
+        #expect(SlotEditForm.requiresTypeChangeConfirmation(draft: draft, live: Self.sampleSlot) == false)
+        draft.type = .consolidation
+        #expect(SlotEditForm.requiresTypeChangeConfirmation(draft: draft, live: Self.sampleSlot) == true)
+    }
 }

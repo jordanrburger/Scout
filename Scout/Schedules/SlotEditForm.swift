@@ -1,21 +1,47 @@
 import SwiftUI
 
 /// Inline expanded edit form for a single slot. Holds a SlotDraft in @State,
-/// validates per-field live, and exposes a Save button when (draft != live)
-/// AND all fields validate. Full action wiring (onSave, onDelete, onFireNow,
-/// onRevertNewDraft) lands in Task 11; this task uses no-op closures.
+/// validates per-field live, and exposes Save / Delete / Fire-now / Revert
+/// buttons wired to caller-provided async callbacks.
 @MainActor
 struct SlotEditForm: View {
     let liveSlot: Slot
     let isNewDraft: Bool
 
-    @State private var draft: SlotDraft
+    let onSave: (Slot) async -> Void
+    let onDelete: () async -> Void
+    let onFireNow: (String) async -> Void
+    let onRevertNewDraft: (() -> Void)?
 
-    init(liveSlot: Slot, isNewDraft: Bool = false) {
+    @State private var draft: SlotDraft
+    @State private var isConfirmingTypeChange = false
+    @State private var isConfirmingDelete = false
+    @State private var isSaving = false
+
+    init(
+        liveSlot: Slot,
+        isNewDraft: Bool = false,
+        onSave: @escaping (Slot) async -> Void,
+        onDelete: @escaping () async -> Void,
+        onFireNow: @escaping (String) async -> Void,
+        onRevertNewDraft: (() -> Void)? = nil
+    ) {
         self.liveSlot = liveSlot
         self.isNewDraft = isNewDraft
+        self.onSave = onSave
+        self.onDelete = onDelete
+        self.onFireNow = onFireNow
+        self.onRevertNewDraft = onRevertNewDraft
         _draft = State(initialValue: SlotDraft(from: liveSlot))
     }
+
+    // MARK: - Static helpers
+
+    nonisolated static func requiresTypeChangeConfirmation(draft: SlotDraft, live: Slot) -> Bool {
+        draft.type != live.type
+    }
+
+    // MARK: - Body
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -30,6 +56,16 @@ struct SlotEditForm: View {
         .background(Color(nsColor: .controlBackgroundColor).opacity(0.4))
         .cornerRadius(8)
     }
+
+    // MARK: - Private helpers
+
+    private func performSave() async {
+        isSaving = true
+        defer { isSaving = false }
+        await onSave(draft.toSlot())
+    }
+
+    // MARK: - Subviews
 
     @ViewBuilder
     private var slotKeyField: some View {
@@ -152,17 +188,60 @@ struct SlotEditForm: View {
     @ViewBuilder
     private var actionBar: some View {
         HStack {
+            if !isNewDraft {
+                Button("Delete") { isConfirmingDelete = true }
+                    .foregroundStyle(.red)
+                Button("Fire now") {
+                    Task { await onFireNow(draft.key) }
+                }
+                .disabled(draft.isDirty(against: liveSlot))
+            }
             Spacer()
             Button("Revert") {
-                draft = SlotDraft(from: liveSlot)
+                if isNewDraft {
+                    onRevertNewDraft?()
+                } else {
+                    draft = SlotDraft(from: liveSlot)
+                }
             }
-            .disabled(!draft.isDirty(against: liveSlot))
+            .disabled(!isNewDraft && !draft.isDirty(against: liveSlot))
             Button("Save") {
-                // Action wiring lands in Task 11.
+                if Self.requiresTypeChangeConfirmation(draft: draft, live: liveSlot) {
+                    isConfirmingTypeChange = true
+                } else {
+                    Task { await performSave() }
+                }
             }
             .keyboardShortcut(.return, modifiers: [.command])
-            .disabled(draft.firstError != nil || !draft.isDirty(against: liveSlot))
+            .disabled(draft.firstError != nil || (!isNewDraft && !draft.isDirty(against: liveSlot)))
         }
         .padding(.top, 8)
+        .alert(
+            "Change slot type?",
+            isPresented: $isConfirmingTypeChange,
+            actions: {
+                Button("Cancel", role: .cancel) { }
+                Button("Change") {
+                    Task { await performSave() }
+                }
+            },
+            message: {
+                Text("Changing slot type updates which connectors are required at fire time and reorders single-fire-per-tick priority. Continue?")
+            }
+        )
+        .confirmationDialog(
+            "Delete \(draft.key)?",
+            isPresented: $isConfirmingDelete,
+            titleVisibility: .visible,
+            actions: {
+                Button("Delete", role: .destructive) {
+                    Task { await onDelete() }
+                }
+                Button("Cancel", role: .cancel) { }
+            },
+            message: {
+                Text("Removes this slot from schedule.yaml. Tracker history is retained but unused. Run-event logs keep their references.")
+            }
+        )
     }
 }

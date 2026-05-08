@@ -12,11 +12,11 @@ struct SlotTableRow: View {
             nameCell.frame(maxWidth: .infinity, alignment: .leading)
             typeCell.frame(width: 140, alignment: .leading)
             timeCell.frame(width: 70, alignment: .leading)
-            daysCell.frame(width: 200, alignment: .leading)
+            daysCell.frame(width: 250, alignment: .leading)
             onMissCell.frame(width: 90, alignment: .leading)
             cooldownCell.frame(width: 90, alignment: .leading)
         }
-        .padding(.vertical, 10)
+        .padding(.vertical, 6)
         .padding(.horizontal, 16)
         .background(rowBackground)
         .overlay(alignment: .leading) {
@@ -42,6 +42,8 @@ struct SlotTableRow: View {
             Text(slot.key)
                 .font(DS.mono(13))
                 .foregroundStyle(DS.Ink.p1)
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
             Image(systemName: "lock.fill")
                 .font(.system(size: 10))
                 .foregroundStyle(DS.Ink.p4)
@@ -59,7 +61,7 @@ struct SlotTableRow: View {
     }
 
     private var daysCell: some View {
-        VStack(alignment: .leading, spacing: 4) {
+        HStack(spacing: 10) {
             DayCircleStrip(
                 activeDays: Set(slot.weekdays),
                 typeColor: DS.SlotType.color(for: slot.type),

@@ -32,7 +32,7 @@ struct SchedulesMasterTable: View {
             headerCell("NAME").frame(maxWidth: .infinity, alignment: .leading)
             headerCell("TYPE").frame(width: 140, alignment: .leading)
             headerCell("TIME").frame(width: 70, alignment: .leading)
-            headerCell("DAYS").frame(width: 200, alignment: .leading)
+            headerCell("DAYS").frame(width: 250, alignment: .leading)
             headerCell("ON MISS").frame(width: 90, alignment: .leading)
             headerCell("COOLDOWN").frame(width: 90, alignment: .leading)
         }
@@ -50,11 +50,8 @@ struct SchedulesMasterTable: View {
     @ViewBuilder
     private func row(for slot: Slot) -> some View {
         let isSelected = selectedSlotKey == slot.key
-        Button {
-            selectedSlotKey = slot.key
-        } label: {
-            SlotTableRow(slot: slot, isSelected: isSelected)
-        }
-        .buttonStyle(.plain)
+        SlotTableRow(slot: slot, isSelected: isSelected)
+            .contentShape(Rectangle())
+            .onTapGesture { selectedSlotKey = slot.key }
     }
 }

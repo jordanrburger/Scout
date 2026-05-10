@@ -93,7 +93,7 @@ A hand-edit is detected by exact-content comparison: render the runner template 
 
 This is intentionally strict — runners are not expected to be hand-edited, and the cost of a false-positive backup (one extra `.bak` file) is much lower than silently overwriting a customization.
 
-### 4.5 3-way merge for category 4
+### 4.5 3-way merge for category 4 (sidecar conflict policy)
 
 After every assembly (setup or update), snapshot is written to `.scout-state/last-assembled/{SKILL,DREAMING,RESEARCH}.md` (gitignored).
 
@@ -106,12 +106,26 @@ for name in ("SKILL", "DREAMING", "RESEARCH"):
     ours = assemble_from_phases(name)                       # fresh from current plugin phases
 
     result, conflicts = git_merge_file(base=base, ours=ours, theirs=theirs, marker_diff3=True)
-    write(f"{name}.md", result)
     if not conflicts:
+        write(f"{name}.md", result)
         write(f".scout-state/last-assembled/{name}.md", ours)
     else:
-        abort_pipeline(f"Conflict in {name}.md — resolve and re-run /scout-update")
+        # Sidecar policy: leave live file UNTOUCHED so the running system keeps
+        # working against the last-known-good content. Write the proposed merge
+        # (with conflict markers) to a sidecar file. Doctor (stage 8) will
+        # report yellow until user resolves.
+        write(f"{name}.md.proposed-merge", result)
+        log_warning(f"Conflict in {name}.md — proposed merge at {name}.md.proposed-merge")
+        # DO NOT abort. Continue the pipeline (stages 6, 7, 8).
 ```
+
+**Why sidecar instead of in-place markers:** SKILL.md is read as the prompt for every dispatcher-fired Claude session. Conflict markers (`<<<<<<< HEAD`, `=======`, `>>>>>>> theirs`) embedded in the live file would cause Claude to follow malformed instructions. The sidecar approach keeps the running system functional during conflict resolution.
+
+**Why continue the pipeline instead of aborting:** Aborting at stage 5 leaves the vault in a torn state — Cat 1 files (scripts, ontology, plists) updated, but version stamp not bumped and jobs not restarted. Re-running `/scout-update` on the same delta repeats the same conflict. Sidecar + continue gives idempotent completion.
+
+**Pre-flight handling on next run:** `/scout-update` pre-flight (§6.2) detects existing `*.proposed-merge` sidecar files and refuses to run until the user has resolved them. Resolution path: user edits the sidecar to remove conflict markers, runs `mv SKILL.md.proposed-merge SKILL.md`, then re-runs `/scout-update` (which will now see the resolved content and merge cleanly into the snapshot).
+
+**Doctor reporting:** Stage 8 reports yellow (not red) if any `*.proposed-merge` sidecar exists. Yellow means "system functional, user action pending."
 
 Legacy vaults (no snapshot from before Plan 8): treat current vault file as the initial snapshot. First `/scout-update` is degenerate (snapshot = theirs → no edits detected → merge result = ours). Subsequent updates see real merges.
 
@@ -173,15 +187,64 @@ The wizard reads this and tries each tool in order, marking the connector as ena
 ### 4.8 Linux scheduling
 
 Add `scoutctl schedule install-cron`:
-- Writes a managed block to `crontab -l` between `# >>> scout-managed >>>` / `# <<< scout-managed <<<` markers.
+- Manages a marked block in the user's crontab between `# >>> scout-managed >>>` / `# <<< scout-managed <<<` markers.
 - Block contains:
   - `*/5 * * * * scoutctl schedule tick >> ~/Scout/.scout-logs/cron.log 2>&1`
   - `*/30 * * * * ~/Scout/scripts/heartbeat.sh >> ~/Scout/.scout-logs/cron.log 2>&1`
-- Idempotent: removes existing managed block before writing new one.
+
+**Atomic rewrite (avoids data loss on partial-failure):**
+
+```python
+def install_cron(slots: list[str]) -> None:
+    # 1. Read current crontab (may be empty).
+    current = subprocess.run(["crontab", "-l"], capture_output=True, text=True)
+    current_lines = current.stdout.splitlines() if current.returncode == 0 else []
+
+    # 2. Strip any existing managed block IN MEMORY.
+    new_lines = strip_managed_block(current_lines)
+
+    # 3. Append fresh managed block IN MEMORY.
+    new_lines.extend(build_managed_block(slots))
+
+    # 4. Write to a temp file (atomic write to disk).
+    with tempfile.NamedTemporaryFile("w", delete=False, suffix=".cron") as tf:
+        tf.write("\n".join(new_lines) + "\n")
+        tmp_path = tf.name
+
+    # 5. Apply with a single crontab call. If it fails, the original
+    #    crontab is still active — the user has lost nothing.
+    result = subprocess.run(["crontab", tmp_path], capture_output=True, text=True)
+    if result.returncode != 0:
+        os.unlink(tmp_path)
+        raise CrontabApplyError(f"crontab apply failed: {result.stderr}")
+
+    # 6. Backup the previous crontab for one-revision rollback.
+    backup_path = Path.home() / f".crontab.scout-bak.{date.today().isoformat()}"
+    backup_path.write_text("\n".join(current_lines) + "\n")
+    os.unlink(tmp_path)
+```
+
+Critically, the previous crontab is *never* written-then-modified-then-applied. We compose the entire new crontab in memory, write it as a single temp file, and apply atomically. Any failure leaves the user's crontab in its prior state.
 
 Add `scoutctl schedule install-all` — platform-agnostic wrapper that picks launchd (`install-plist` + `install-heartbeat-plist`) or cron (`install-cron`) based on `uname -s`. Single platform-detection point.
 
-### 4.9 `scout-config.yaml` additions
+### 4.9 Global pipeline lock
+
+`scoutctl bootstrap install|upgrade` acquires `~/Scout/.scout-logs/.scout-session.lock` at the *start* of stage 1 and holds it through stage 8. The lock file contains the bootstrap process PID.
+
+**Interaction with running Scout sessions:**
+
+- Runner scripts already check this lock at startup (`run-scout.sh.tmpl` lines 23–32). If the lock is held by a live PID, the runner logs "Another SCOUT session running — skipping" and exits cleanly. The dispatcher (`scoutctl schedule tick`) keeps firing on its 5-min cadence, but each fire becomes a no-op until bootstrap completes.
+- If the lock is held by a dead PID (stale from a crash), bootstrap removes it and proceeds. Same convention runners already use.
+- If the lock is held by a *live* PID (a runner is mid-flight when the user invokes `/scout-update`), bootstrap waits up to 5 minutes for it to clear, polling every 10s. After 5 minutes, abort with: `"Scout session in progress (PID N), retry /scout-update in N minutes."`
+
+**Why this scope:** Without a global lock, the dispatcher's 5-min tick can fire a runner mid-pipeline. The runner reads partially-written `run-scout.sh` (stage 4 in progress), partially-written `SKILL.md` (stage 5 in progress), or runs against an old plist that's about to be replaced (stage 6 imminent). All three produce nondeterministic failures. Holding the lock for the full pipeline closes every window.
+
+**Why 5-min wait:** typical runner durations are 2–4 minutes. Five minutes covers the long tail without making bootstrap feel hung. Polling at 10s gives a reasonable user-visible "waiting for runner X (PID N) to finish" message.
+
+**Bootstrap doctor exemption:** `scoutctl bootstrap doctor` is read-only and does not acquire the lock. Doctor can run safely during a session.
+
+### 4.10 `scout-config.yaml` additions
 
 ```yaml
 plugin:
@@ -215,6 +278,7 @@ Read by stage 1 (pre-flight version delta) and written by stage 7 (version bump)
 - `engine/tests/unit/test_three_way_merge.py`
 - `engine/tests/unit/test_connector_probe_registry.py`
 - `engine/tests/integration/test_bootstrap_smoke.sh`
+- `scripts/install-venv.sh` (plugin-root, executable) — documented manual fallback for users whose `/scout-setup` venv install times out
 
 ### 5.2 Modify
 
@@ -243,12 +307,20 @@ Refuses (with actionable message) if any of:
 - macOS: `launchctl list | grep com.scout` returns matches
 - Linux: `crontab -l` contains `# >>> scout-managed >>>`
 
-Verifies (auto-installs if missing):
-- `~/scout-plugin/.venv/bin/scoutctl` — engine venv. If missing, runs `python3 -m venv ~/scout-plugin/.venv && ~/scout-plugin/.venv/bin/pip install -e ~/scout-plugin/engine`.
+Verifies engine venv:
+- `~/scout-plugin/.venv/bin/scoutctl` — required. If missing, `/scout-setup` runs as a *separate pre-stage* (before stage 1):
+  - User-visible message: `"Engine venv missing. Installing now (this typically takes 30–60 seconds)..."`
+  - Bash invocation: `python3 -m venv ~/scout-plugin/.venv && ~/scout-plugin/.venv/bin/pip install -e ~/scout-plugin/engine` with explicit `timeout: 300000` (5 min) to cover slow networks and dependency resolution.
+  - Slash command supports a `--skip-venv-install` flag for users who pre-built the venv (e.g., via `bash ~/scout-plugin/scripts/install-venv.sh`, which Plan 8 ships as a documented manual fallback).
+  - On failure, abort with: `"Engine venv install failed. Run manually: bash ~/scout-plugin/scripts/install-venv.sh, then retry /scout-setup."`
 
 ### 6.2 `/scout-update` pre-flight
 
 Refuses if `~/Scout/scout-config.yaml` is missing.
+
+**Sidecar conflict check (from prior incomplete update):**
+- If any `~/Scout/{SKILL,DREAMING,RESEARCH}.md.proposed-merge` file exists, refuses with: `"Unresolved merge conflict from a prior /scout-update. Resolve <files> by editing them to remove conflict markers, then 'mv X.md.proposed-merge X.md' and re-run /scout-update."`
+- Rationale: the running system is currently using the last-known-good live SKILL.md while the user still owes a merge. Layering a new merge attempt on top would compound state.
 
 Reads `scout-config.yaml`:
 - `plugin.version_at_last_update` (or `version_at_last_setup` if first update)
@@ -263,20 +335,25 @@ Validates current vault:
 
 | Stage | Failure | Recovery |
 |-------|---------|----------|
+| 0 (pre-stage) | engine venv install fails (timeout, dep error, no network) | Abort with `bash ~/scout-plugin/scripts/install-venv.sh` instructions |
 | 1 | Vault detected during `/scout-setup` | Abort with manual reset snippet |
 | 1 | Orphan jobs without vault (half-reset state) | Abort with manual reset snippet |
-| 1 | engine venv install fails | Abort with `python3 -m venv` instructions |
+| 1 | Sidecar `*.proposed-merge` from prior failed update | Abort with resolution instructions |
+| 1 | Cannot acquire `.scout-session.lock` within 5 min | Abort with `"Scout session in progress (PID N), retry in N minutes"` |
 | 3 | Permission denied / disk full | Abort; rerun is idempotent |
 | 4 | Hand-edited runner detected | Back up to `.bak.YYYY-MM-DD`, regenerate, log to terminal output |
-| 5 | 3-way merge conflict | Write conflict markers in vault file, abort, prompt user to resolve and re-run |
+| 5 | 3-way merge conflict | Write proposed merge to `<file>.proposed-merge` sidecar; live file untouched; pipeline continues; doctor reports yellow |
 | 6 | `launchctl bootout` fails | Warn; user runs `scoutctl schedule install-all --force` separately |
-| 6 | crontab write fails (Linux) | Warn; user fixes crontab manually |
-| 8 | Doctor reports red | Loud warning to terminal; do *not* roll back (rollback is destructive) |
+| 6 | crontab apply fails (Linux) | Original crontab still active (atomic temp-file approach); abort; user inspects `~/.crontab.scout-bak.YYYY-MM-DD` |
+| 8 | Doctor reports red (e.g., schedule.yaml invalid, jobs not registered) | Loud warning to terminal; do *not* roll back (rollback is destructive) |
+| 8 | Doctor reports yellow (sidecar files, hand-edit backups) | Print summary of pending user actions; pipeline still considered successful |
 
 Idempotency property: rerunning the pipeline must converge. Each stage either succeeds or aborts cleanly without partial state. Specifically:
 - Stage 3 overwrites are atomic per-file (write to `.tmp`, rename).
 - Stage 4 only takes a backup if the file was modified vs the previously-rendered template; otherwise overwrite is silent.
-- Stage 5 only writes the snapshot on clean merge; conflict path leaves snapshot stale (rerun after resolution succeeds).
+- Stage 5 writes the snapshot only when the merge is clean; conflict path leaves snapshot at its previous value (next `/scout-update` after user resolves the sidecar will see the resolved live file as `theirs` and merge cleanly).
+- Stage 6 (Linux) writes new crontab atomically via temp-file; on failure the prior crontab remains active and is backed up to `~/.crontab.scout-bak.YYYY-MM-DD`.
+- The global pipeline lock (§4.9) blocks dispatcher tick from interleaving with any stage.
 
 ## 8. Testing
 
@@ -358,10 +435,13 @@ Output: green (all checks pass) / yellow (warnings) / red (errors). Exit code: 0
 
 ## 11. Risks
 
-- **3-way merge surprises on phase rewrites.** If a phase file gets restructured (sections renamed, INSERT markers reorganized), the merge sees it as "ours changed everything" and any vault edit becomes a conflict. Mitigation: when shipping phase rewrites in future plans, ship them as multi-step PRs (rename first, restructure later) so each individual update merges cleanly. Plan 9's structured-proposal model eliminates this risk for proposal-driven edits.
-- **Engine venv drift.** `~/scout-plugin/.venv/` is outside the vault and not version-tracked. If it gets out of sync with the plugin code, `scoutctl bootstrap` fails opaquely. Mitigation: pre-flight runs `scoutctl --version` and compares against `plugin.json`; if mismatch, runs `pip install -e ~/scout-plugin/engine` before proceeding.
+- **3-way merge surprises on phase rewrites.** If a phase file gets restructured (sections renamed, INSERT markers reorganized), the merge sees it as "ours changed everything" and any vault edit becomes a conflict. Mitigation: when shipping phase rewrites in future plans, ship them as multi-step PRs (rename first, restructure later) so each individual update merges cleanly. The sidecar conflict policy (§4.5) keeps the running system functional even when conflicts arise; user resolves at their convenience. Plan 9's structured-proposal model eliminates this risk entirely for proposal-driven edits.
+- **Engine venv drift.** `~/scout-plugin/.venv/` is outside the vault and not version-tracked. If it gets out of sync with the plugin code, `scoutctl bootstrap` fails opaquely. Mitigation: pre-flight runs `scoutctl --version` and compares against `plugin.json`; if mismatch, runs `pip install -e ~/scout-plugin/engine` before proceeding (with the same 5-min timeout as the cold-install case).
 - **Linux `cron` doesn't run in a login shell.** PATH/HOME drift risk. Mitigation: managed block sets explicit `PATH=` and `SHELL=/bin/bash` headers; smoke test covers a non-login-shell environment.
-- **`launchctl bootout` race.** If the dispatcher is mid-tick when stage 6 runs, bootout interrupts the runner. Mitigation: stage 6 acquires `.scout-session.lock` before bootout; releases on completion. If lock can't be acquired in 30s, abort stage 6 and tell user to retry.
+- **Dispatcher-tick interleaving with pipeline stages.** Without the global lock, a 5-min tick fires a runner mid-pipeline. The runner reads partially-written runner script (stage 4), reads SKILL.md mid-merge (stage 5), or executes against an old plist about to be replaced (stage 6). Mitigation: §4.9 global pipeline lock — bootstrap acquires `.scout-session.lock` at start of stage 1, holds through stage 8. Runners and dispatcher already respect this lock; ticks become no-ops until the pipeline completes.
+- **Crontab clobber on partial failure.** If the Linux install path strips the managed block before successfully writing the new one, the user permanently loses their schedule. Mitigation: §4.8 atomic rewrite — compose entire new crontab in memory, write to temp file, apply with single `crontab <tmpfile>` call. On failure, original crontab is intact. Previous crontab also backed up to `~/.crontab.scout-bak.YYYY-MM-DD` for one-revision rollback.
+- **Conflict markers reaching the running system.** If we wrote `<<<<<<< HEAD` markers into the live SKILL.md on conflict, the next dispatcher fire would feed them as a Claude prompt — runs would produce garbage. Mitigation: §4.5 sidecar policy — live SKILL.md is never overwritten on conflict; markers go to `SKILL.md.proposed-merge`. Dispatcher fires keep using the last-known-good content.
+- **Venv install timeout under Claude tool-use.** Default Bash timeout is 2 min; cold `pip install` on slow networks can exceed that. Mitigation: §6.1 explicit `timeout: 300000` (5 min) on the venv install bash call; documented `~/scout-plugin/scripts/install-venv.sh` as a manual fallback; `--skip-venv-install` flag on `/scout-setup` for users who pre-built.
 
 ## 12. Open questions resolved during brainstorm
 

@@ -93,7 +93,9 @@ A hand-edit is detected by exact-content comparison: render the runner template 
 
 This is intentionally strict — runners are not expected to be hand-edited, and the cost of a false-positive backup (one extra `.bak` file) is much lower than silently overwriting a customization.
 
-### 4.5 3-way merge for category 4 (sidecar conflict policy)
+### 4.5 3-way merge for category 4 (sidecar policy + M3-incident amendment)
+
+**M3-incident amendment (2026-05-11):** the original "first /scout-update on legacy vault is degenerate — merge result = ours" branch silently overwrote 85KB of vault edits when tested live against `~/Scout/`. The fix below replaces that branch with a sidecar.
 
 After every assembly (setup or update), snapshot is written to `.scout-state/last-assembled/{SKILL,DREAMING,RESEARCH}.md` (gitignored).
 
@@ -105,15 +107,28 @@ for name in ("SKILL", "DREAMING", "RESEARCH"):
     theirs = read(f"{name}.md")                             # current vault, with edits
     ours = assemble_from_phases(name)                       # fresh from current plugin phases
 
+    # CASE 1: plugin produced the same content vault already has — advance
+    # snapshot, no live touch.
+    if ours == theirs:
+        write(f".scout-state/last-assembled/{name}.md", ours)
+        continue
+
+    # CASE 2 (M3-incident protection): no recorded vault edits vs base, but
+    # plugin diverged. We cannot distinguish 'no edits yet' from 'edits with
+    # no edit history' — write proposed plugin content to sidecar for user
+    # review; leave live + snapshot untouched.
+    if base == theirs:
+        write(f"{name}.md.proposed-merge", ours)
+        log_warning(f"Plugin content diverged; review {name}.md.proposed-merge")
+        continue
+
+    # CASE 3: both sides diverged from base — real 3-way merge.
     result, conflicts = git_merge_file(base=base, ours=ours, theirs=theirs, marker_diff3=True)
     if not conflicts:
         write(f"{name}.md", result)
         write(f".scout-state/last-assembled/{name}.md", ours)
     else:
-        # Sidecar policy: leave live file UNTOUCHED so the running system keeps
-        # working against the last-known-good content. Write the proposed merge
-        # (with conflict markers) to a sidecar file. Doctor (stage 8) will
-        # report yellow until user resolves.
+        # Live + snapshot untouched on conflict.
         write(f"{name}.md.proposed-merge", result)
         log_warning(f"Conflict in {name}.md — proposed merge at {name}.md.proposed-merge")
         # DO NOT abort. Continue the pipeline (stages 6, 7, 8).
@@ -127,9 +142,22 @@ for name in ("SKILL", "DREAMING", "RESEARCH"):
 
 **Doctor reporting:** Stage 8 reports yellow (not red) if any `*.proposed-merge` sidecar exists. Yellow means "system functional, user action pending."
 
-Legacy vaults (no snapshot from before Plan 8): treat current vault file as the initial snapshot. First `/scout-update` is degenerate (snapshot = theirs → no edits detected → merge result = ours). Subsequent updates see real merges.
+**Legacy vault migration path (added post-M3):** legacy Plan-5-era vaults (no `scout-config.yaml`, no `.scout-state/last-assembled/` snapshots) must run `scoutctl bootstrap migrate-legacy` before `/scout-update`. The migration command:
 
-This intentionally trades "first /scout-update on legacy vault loses some merge intelligence" for "no need to backfill what edits exist." Plan 9 (dreaming-proposals as edit log) will eliminate the need for snapshots entirely for proposal-driven edits.
+1. Requires `--user-name`, `--user-email`, plus optional `--user-slack-id`, `--claude-bin`, `--max-budget`, `--instance-name`, `--timezone`, `--github-username`, `--github-repos`, `--connectors` flags
+2. Snapshots current SKILL/DREAMING/RESEARCH → `.scout-state/last-assembled/` (establishes merge baseline = current live)
+3. Seeds `.scout-state/schedule.yaml` from engine defaults if missing
+4. Runs cat-1 writes with the now-correct template vars
+5. Runs cat-1b runner regen with hand-edit detection (legacy hand-edited runners get backed up to `.bak.YYYY-MM-DD`)
+6. **Skips cat-4 merge entirely** — snapshots just established equal current live; nothing to merge
+7. Writes `scout-config.yaml` with `user`, `instance`, `connectors.enabled`, `connectors.inputs`, `timezone`, `platform`, `plugin.version_at_last_*`
+8. Doctor
+
+`upgrade()` pre-flight refuses on legacy vaults (no `scout-config.yaml`) with the actionable error: `"legacy vault detected — run scoutctl bootstrap migrate-legacy first."`
+
+After migration, the first `/scout-update` will hit CASE 2 (base == theirs because snapshot was seeded equal to current; ours may diverge from plugin phase updates) and write sidecars for review rather than overwriting. The user reviews `*.proposed-merge` files at leisure and chooses what (if anything) to adopt.
+
+Plan 9 (dreaming-proposals as edit log) will eliminate the need for these sidecars for proposal-driven edits.
 
 ### 4.6 Reset path — removed from both commands
 

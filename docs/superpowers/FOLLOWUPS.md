@@ -282,6 +282,22 @@ appears (e.g., a packaged `.app` bundling the engine).
 _(Move entries here as PRs close them. Format:
 `- **[item title]** — PR #N, date.`)_
 
+### scout-plugin PR #16 + #17 — Plan 8: /scout-setup repair + /scout-update + legacy migration (2026-05-11)
+
+- **scout-setup staleness (cross-cutting, important)** — `commands/scout-setup.md` rewritten from 976 → 137 lines as a thin wrapper around `scoutctl bootstrap install`. Drops legacy plist generation, hardcoded MCP probe names, and clock-derived schedule variables.
+- **No /scout-update workflow (cross-cutting, important)** — added `commands/scout-update.md` + `scoutctl bootstrap upgrade` with stage-based pipeline, global lock, sidecar conflict policy, runner hand-edit detection with backup.
+- **Heartbeat plist had no plugin source-of-truth (minor)** — `engine/scout/defaults/com.scout.heartbeat.plist` + `install_heartbeat_plist.py` + `scoutctl schedule install-heartbeat-plist` added.
+- **Stale "Reserved for Plan 7" labels on `runtime: remote` (minor)** — `engine/scout/schedule.py:47` + `engine/scout/scripts/schedule_tick.py:387` updated to say "reserved for a future plan; not yet wired" (Plan 7 shipped as schedules tab visual rewrite; remote execution gets its own plan number TBD, likely post-Plan-9).
+- **Legacy Plan-5-era vault migration (uncovered during live test)** — `scoutctl bootstrap migrate-legacy` subcommand added. Establishes Plan 8 baseline (snapshots + scout-config.yaml + cat-1 regen) without touching cat-4 live files. Required pre-upgrade for vaults lacking `scout-config.yaml`.
+- **Cat-4 merge degenerate-overwrite bug (M3 incident)** — fixed in M4. `_stage_cat4_upgrade` now writes to `<name>.md.proposed-merge` sidecar when `base==theirs` but `ours` diverges, instead of fast-forwarding. Spec §4.5 amended.
+- **`scout-config.yaml` didn't persist `connector_inputs`** — fixed in M5. `_stage_version_stamp` now writes `connectors.enabled`, `connectors.inputs`, `timezone`, `platform`; upgrade CLI reads them back.
+- **Smoke test path hardcoded to worktree** — fix(test) PR #17 repointed default to `~/scout-plugin/.venv/bin/scoutctl`.
+
+Plan: `~/scout-app/docs/superpowers/plans/2026-05-10-plan-8-scout-setup-repair-plan.md` (20 tasks + 6 M-tasks).
+Spec: `docs/superpowers/specs/2026-05-09-plan-8-scout-setup-repair-design.md` with §4.5 amendment.
+Plugin tag: `v0.4.0` on commit `6f155c5`.
+Live ~/Scout/ successfully migrated; three `*.proposed-merge` sidecars staged for Jordan's manual review.
+
 ### scout-plugin PR #6 — polish: plan-1 followups (2026-04-24)
 
 - **Wheel-packaging readiness (cross-cutting, important)** — moved

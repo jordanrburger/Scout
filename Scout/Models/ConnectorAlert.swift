@@ -44,7 +44,8 @@ struct ConnectorAlert: Equatable, Hashable, Sendable {
                   let firstSeen = f.date(from: String(parts[4].dropFirst("first_seen=".count)))
             else { continue }
             out.append(ConnectorAlert(
-                ts: ts, level: level, connector: parts[2],
+                ts: ts, level: level,
+                connector: ConnectorKeyAlias.canonical(parts[2]),
                 reason: parts[3], firstSeen: firstSeen
             ))
         }

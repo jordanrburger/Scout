@@ -35,9 +35,20 @@ struct ConnectorCall: Codable, Equatable, Hashable, Sendable {
         for line in text.split(separator: "\n", omittingEmptySubsequences: true) {
             guard let d = line.data(using: .utf8) else { continue }
             if let call = try? decoder.decode(ConnectorCall.self, from: d) {
-                out.append(call)
+                out.append(call.canonicalized())
             }
         }
         return out
+    }
+
+    /// Returns a copy with `connector` normalized through `ConnectorKeyAlias`.
+    /// Keeps the rest of the system free of rename drift.
+    func canonicalized() -> ConnectorCall {
+        let canonical = ConnectorKeyAlias.canonical(connector)
+        guard canonical != connector else { return self }
+        return ConnectorCall(
+            ts: ts, sessionId: sessionId, mode: mode, tool: tool,
+            connector: canonical, error: error, err: err
+        )
     }
 }

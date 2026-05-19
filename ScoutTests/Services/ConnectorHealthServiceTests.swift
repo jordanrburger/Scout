@@ -5,19 +5,46 @@ import Foundation
 @Suite("ConnectorHealthService")
 struct ConnectorHealthServiceTests {
     @Test func buildsMatrixFromFixtureAndFiltersAckedAlerts() async throws {
-        let fixtures = Bundle(for: FixtureAnchor.self).resourceURL!
-        let logsDir = fixtures.appendingPathComponent("Connector_fixture_\(UUID().uuidString)", isDirectory: true)
+        // The committed fixture (connector-calls-2026-04-22.jsonl) ages out of
+        // the service's 14-day window once real-world time advances. Synthesize
+        // an equivalent fixture in-line keyed off "now" so this test stays
+        // green regardless of when it runs. Mirrors the structure of the
+        // committed fixture: three sessions across the same connectors,
+        // including legacy keys (mcp:plugin_*) that should canonicalize.
+        let logsDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("Connector_fixture_\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: logsDir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: logsDir) }
 
-        // Copy the two fixtures into a temp logsDir so the service sees them.
-        try FileManager.default.copyItem(
-            at: fixtures.appendingPathComponent("connector-calls-2026-04-22.jsonl"),
-            to: logsDir.appendingPathComponent("connector-calls-2026-04-22.jsonl")
+        let iso = ISO8601DateFormatter()
+        iso.formatOptions = [.withInternetDateTime]
+        let now = Date()
+        let s1 = iso.string(from: now.addingTimeInterval(-3600 * 6))   // 6h ago
+        let s2 = iso.string(from: now.addingTimeInterval(-3600 * 4))   // 4h ago
+        let s3 = iso.string(from: now.addingTimeInterval(-3600 * 2))   // 2h ago
+        let firstSeen = iso.string(from: now.addingTimeInterval(-3600 * 4))
+        let alertTs = iso.string(from: now.addingTimeInterval(-3600 * 3))
+
+        let callsJSONL = """
+        {"ts":"\(s1)","session_id":"s1","mode":"briefing","tool":"mcp__plugin_slack_slack__slack_send_message","connector":"mcp:plugin_slack_slack","error":false}
+        {"ts":"\(s1)","session_id":"s1","mode":"briefing","tool":"mcp__claude_ai_Gmail__search_threads","connector":"mcp:claude_ai_Gmail","error":false}
+        {"ts":"\(s2)","session_id":"s2","mode":"consolidation","tool":"mcp__plugin_slack_slack__slack_read_channel","connector":"mcp:plugin_slack_slack","error":false}
+        {"ts":"\(s2)","session_id":"s2","mode":"consolidation","tool":"mcp__claude_ai_Google_Drive__list_recent_files","connector":"mcp:claude_ai_Google_Drive","error":true,"err":"auth expired"}
+        {"ts":"\(s2)","session_id":"s2","mode":"consolidation","tool":"mcp__claude_ai_Google_Drive__list_recent_files","connector":"mcp:claude_ai_Google_Drive","error":true,"err":"auth expired"}
+        {"ts":"\(s2)","session_id":"s2","mode":"consolidation","tool":"mcp__claude_ai_Google_Drive__list_recent_files","connector":"mcp:claude_ai_Google_Drive","error":true,"err":"auth expired"}
+        {"ts":"\(s3)","session_id":"s3","mode":"dreaming","tool":"mcp__plugin_linear_linear__list_issues","connector":"mcp:plugin_linear_linear","error":false}
+        {"ts":"\(s3)","session_id":"s3","mode":"dreaming","tool":"mcp__claude_ai_Gmail__search_threads","connector":"mcp:claude_ai_Gmail","error":true,"err":"rate-limited"}
+        {"ts":"\(s3)","session_id":"s3","mode":"dreaming","tool":"mcp__claude_ai_Gmail__search_threads","connector":"mcp:claude_ai_Gmail","error":false}
+        {"ts":"\(s3)","session_id":"s3","mode":"dreaming","tool":"mcp__claude_ai_Gmail__search_threads","connector":"mcp:claude_ai_Gmail","error":false}
+        """
+        try callsJSONL.write(
+            to: logsDir.appendingPathComponent("connector-calls-now.jsonl"),
+            atomically: true, encoding: .utf8
         )
-        try FileManager.default.copyItem(
-            at: fixtures.appendingPathComponent("connector-alerts.log"),
-            to: logsDir.appendingPathComponent("connector-alerts.log")
+        let alertLine = "\(alertTs) | CRITICAL | mcp:claude_ai_Google_Drive | zero successful calls in last 3 runs | first_seen=\(firstSeen)\n"
+        try alertLine.write(
+            to: logsDir.appendingPathComponent("connector-alerts.log"),
+            atomically: true, encoding: .utf8
         )
 
         let ackURL = FileManager.default.temporaryDirectory
@@ -28,7 +55,7 @@ struct ConnectorHealthServiceTests {
             logsDirectory: logsDir,
             ackStoreURL: ackURL,
             fileEvents: NoopFS(),
-            connectors: ["mcp:plugin_slack_slack",
+            connectors: ["mcp:claude_ai_Slack",
                          "mcp:claude_ai_Gmail",
                          "mcp:claude_ai_Google_Drive"]
         )

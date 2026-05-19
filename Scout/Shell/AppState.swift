@@ -170,6 +170,10 @@ final class AppState: ObservableObject {
     /// path — a manual override that lets a slot fire even when the day's
     /// budget has already been spent. Default `false` for normal upcoming-strip
     /// run-now buttons (which respect the budget gate).
+    ///
+    /// After the dispatch returns, immediately refresh `ScheduleService` so
+    /// the heartbeat strip drops the just-fired slot instead of sitting on
+    /// the past `scheduled_at` until the next 60 s poll tick.
     func fireNow(slotKey: String, bypassBudget: Bool = false) async {
         var args = ["scoutctl", "schedule", "fire-now", slotKey]
         if bypassBudget { args.append("--bypass-budget") }
@@ -179,6 +183,7 @@ final class AppState: ObservableObject {
             environment: [:],
             workingDirectory: scoutDirectory
         )
+        await scheduleService.refresh()
     }
 
     /// Where scoutctl lives + how to invoke it. Used by the constructor to

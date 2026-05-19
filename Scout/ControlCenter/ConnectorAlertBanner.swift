@@ -76,9 +76,11 @@ struct ConnectorAlertBanner: View {
     private func displayName(for connector: String) -> String {
         // Same labels as the rail card's header row. Kept duplicated
         // locally to avoid a cross-file dependency just for 8 strings.
+        // Alert keys are pre-canonicalized by `ConnectorAlert.parseFile`, so
+        // we only need the canonical entries here.
         switch connector {
-        case "mcp:plugin_slack_slack":          return "Slack"
-        case "mcp:plugin_linear_linear":        return "Linear"
+        case "mcp:claude_ai_Slack":             return "Slack"
+        case "mcp:claude_ai_Linear":            return "Linear"
         case "mcp:claude_ai_Gmail":             return "Gmail"
         case "mcp:claude_ai_Google_Calendar":   return "Calendar"
         case "mcp:claude_ai_Granola":           return "Granola"

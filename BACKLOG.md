@@ -235,6 +235,54 @@ render onto.
     discipline across every skill to not skip emit. Weeks, not days —
     only worth building once v1 is proven to be worth looking at.
 
+## Triggers tab (Scout.app — new view)
+
+### Soon
+- **Triggers tab — manage event-based fire conditions.** Companion UI for
+  the event-trigger architecture being built into the scout-plugin engine
+  (full design in `~/Scout/knowledge-base/projects/scout/scout-event-triggers.md`
+  and `~/scout-plugin/docs/specs/event-triggers.md`). Today's Schedules tab
+  surfaces time-based slots (`schedule.yaml`); the new Triggers tab surfaces
+  event-based fire conditions (`triggers.yaml`) with the same CRUD pattern
+  Plan 6 established for Schedules. **Status: gated on engine `triggers_v1`
+  manifest flag.** Don't build the UI until the engine matcher is shipping
+  fires. Two delivery phases:
+  - **Phase 1 — read-only Triggers tab.** Lists all configured triggers
+    from `triggers.yaml`, shows enabled/disabled state, last-fire-ts,
+    daily fire count vs. cap, source connector liveness (pulled from the
+    same `ConnectorHealthService` already in Scout.app v0.1.6). Per-row
+    "Recent fires" inline expansion reads `.scout-logs/trigger-fires-*.jsonl`
+    and renders the last 20 fires with their matched event payload + the
+    dispatched action's outcome. Enables Jordan to *see* what's firing
+    without touching YAML.
+  - **Phase 2 — form-based editor.** Mirror the Schedules tab CRUD
+    affordance (`Scout/Services/ScheduleEditService.swift` is the pattern
+    to copy): edit existing triggers in-place, add new ones from a
+    source-specific template, delete with confirmation. Each source's
+    `SUPPORTED_MATCH_TYPES` becomes a dropdown; action-kind picker drives
+    a conditional form (notify → surfaces picker; run_skill → skill picker
+    populated from installed skills; interactive → no extra fields). Save
+    writes through `TriggerEditService` (new, modeled on `ScheduleEditService`)
+    → atomic temp-file + rename + mtime stale-check + path-scoped git commit
+    + `scoutctl trigger reload` invocation.
+- **Trigger-fire notifications surface in Scout.app menu bar.** When a
+  trigger with `action.kind: interactive` fires, the matching
+  `needs-jordan.md` artifact needs a visible affordance — menu-bar badge
+  count + dropdown listing pending interactive triggers with "open in
+  Claude Code" button (reuses the existing Launch Claude split-menu
+  pattern). Don't compete with the Action Items view; this is a
+  parallel surface for trigger-driven asks specifically.
+
+### Nice-to-have
+- **Trigger fire history view.** Beyond per-row recent fires, a full-tab
+  history showing all trigger fires across all triggers, filterable by
+  time range / source / action outcome. Reuses the Action Items
+  table-vs-cards toggle pattern from Plan 7.
+- **Trigger simulation / dry-run.** Right-click a trigger → "Test against
+  last 24h of events" → invokes `scoutctl trigger test <id> --dry-run`
+  and renders the would-fire list inline. Useful for tuning a match
+  filter without enabling the trigger.
+
 ## Scout system (sessions, CLIs, pipelines)
 
 ### Soon

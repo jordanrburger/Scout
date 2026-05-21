@@ -51,18 +51,23 @@ struct ActionTask: Identifiable, Equatable, Hashable, Sendable {
     }
 
     /// Shortest reliable substring scoutctl's `--subject` matcher can use to
-    /// identify this task in the source markdown. Convention in Scout-written
-    /// action items is `**<bold subject>** _(<italic body>)_`; the bold
-    /// portion is the identity and the italic portion is body/context.
+    /// identify this task in the source markdown. scoutctl matches via
+    /// `by_subject.lower() in raw_line.lower()` — i.e., against the raw
+    /// markdown including `[label](url)` and `[[wikilinks]]`. So the match
+    /// key must also be raw — stripping markdown on the app side guarantees
+    /// the substring won't appear verbatim in the source line.
     ///
-    /// Sending the *full* plainSubject to scoutctl fails for tasks with
-    /// italicized trailers because the substring match has to find the
-    /// whole prose verbatim, and underscores / parens / em-dashes drift.
-    /// Trim to the bold portion when one exists; otherwise split plainSubject
-    /// at the first known body-separator. v0.5.3 quick fix for issue #10.
+    /// Convention in Scout-written action items is `**<bold subject>**
+    /// _(<italic body>)_`; the bold portion is the identity. Take it raw.
+    /// For unstyled lines, fall back to plainSubject trimmed at the first
+    /// known body separator.
+    ///
+    /// v0.5.3 quick fix for issue #10; v0.5.4 stops stripping inner markdown
+    /// after seeing the same failure mode on tasks containing `[PR #X](url)`
+    /// links inside the bold subject.
     var matchableSubject: String {
         if let bold = Self.firstBoldRun(in: subject), !bold.isEmpty {
-            return ActionItemsParser.plainSubject(bold)
+            return bold
         }
         return Self.trimAtBodySeparator(plainSubject)
     }

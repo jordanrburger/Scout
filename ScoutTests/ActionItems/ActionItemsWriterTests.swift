@@ -18,6 +18,7 @@ struct ActionItemsWriterTests {
         ))!
         _ = try? await writer.submit(.addComment(
             subject: "Engage on PROJ-123",
+            shortPrefix: nil,
             text: "Paging reviewer.",
             author: "jordan"
         ), displayedDate: date)
@@ -30,6 +31,47 @@ struct ActionItemsWriterTests {
             "--subject", "Engage on PROJ-123",
             "--comment", "jordan: Paging reviewer."
         ])
+    }
+
+    @Test func usesByIdWhenShortPrefixPresent() async throws {
+        // v0.5.5: tasks parsed with a `[#XXXX]` prefix go through
+        // `--by-id <prefix>` for a structural match, bypassing brittle
+        // substring matching entirely.
+        let recorder = RecordingRunner()
+        let writer = ActionItemsWriter(
+            scoutctl: URL(fileURLWithPath: "/usr/local/bin/scoutctl"),
+            actionItemsDirectory: URL(fileURLWithPath: "/tmp/ai"),
+            scoutDirectory: URL(fileURLWithPath: "/tmp"),
+            runner: recorder,
+            gitService: nil
+        )
+        _ = try? await writer.submit(
+            .markDone(subject: "ignored when prefix present", shortPrefix: "A3F7"),
+            displayedDate: Date()
+        )
+        let call = try #require(await recorder.calls.first)
+        #expect(call.arguments.contains("--by-id"))
+        #expect(call.arguments.contains("A3F7"))
+        #expect(!call.arguments.contains("--subject"))
+    }
+
+    @Test func fallsBackToSubjectWhenShortPrefixNil() async throws {
+        let recorder = RecordingRunner()
+        let writer = ActionItemsWriter(
+            scoutctl: URL(fileURLWithPath: "/usr/local/bin/scoutctl"),
+            actionItemsDirectory: URL(fileURLWithPath: "/tmp/ai"),
+            scoutDirectory: URL(fileURLWithPath: "/tmp"),
+            runner: recorder,
+            gitService: nil
+        )
+        _ = try? await writer.submit(
+            .markDone(subject: "legacy unprefixed task", shortPrefix: nil),
+            displayedDate: Date()
+        )
+        let call = try #require(await recorder.calls.first)
+        #expect(call.arguments.contains("--subject"))
+        #expect(call.arguments.contains("legacy unprefixed task"))
+        #expect(!call.arguments.contains("--by-id"))
     }
 
     @Test func envFallbackPrefixesScoutctlArg() async throws {
@@ -46,7 +88,7 @@ struct ActionItemsWriterTests {
             gitService: nil
         )
         let date = Date()
-        _ = try? await writer.submit(.markDone(subject: "ship it"), displayedDate: date)
+        _ = try? await writer.submit(.markDone(subject: "ship it", shortPrefix: nil), displayedDate: date)
 
         let call = try #require(await recorder.calls.first)
         #expect(call.executable.path == "/usr/bin/env")
@@ -65,7 +107,7 @@ struct ActionItemsWriterTests {
             runner: recorder,
             gitService: nil
         )
-        _ = try? await writer.submit(.reopen(subject: "X"), displayedDate: Date())
+        _ = try? await writer.submit(.reopen(subject: "X", shortPrefix: nil), displayedDate: Date())
         let call = try #require(await recorder.calls.first)
         #expect(call.arguments.contains("mark-done"))
         #expect(call.arguments.contains("--undo"))
@@ -83,7 +125,7 @@ struct ActionItemsWriterTests {
         let until = Calendar(identifier: .iso8601).date(from: DateComponents(
             timeZone: TimeZone(identifier: "America/New_York"), year: 2026, month: 5, day: 21
         ))!
-        _ = try? await writer.submit(.snooze(subject: "X", until: until), displayedDate: Date())
+        _ = try? await writer.submit(.snooze(subject: "X", shortPrefix: nil, until: until), displayedDate: Date())
         let call = try #require(await recorder.calls.first)
         #expect(call.arguments.contains("snooze"))
         #expect(call.arguments.contains("--until"))
@@ -101,9 +143,9 @@ struct ActionItemsWriterTests {
         )
         let date = Date()
 
-        async let a = writer.submit(.markDone(subject: "A"), displayedDate: date)
-        async let b = writer.submit(.markDone(subject: "B"), displayedDate: date)
-        async let c = writer.submit(.markDone(subject: "C"), displayedDate: date)
+        async let a = writer.submit(.markDone(subject: "A", shortPrefix: nil), displayedDate: date)
+        async let b = writer.submit(.markDone(subject: "B", shortPrefix: nil), displayedDate: date)
+        async let c = writer.submit(.markDone(subject: "C", shortPrefix: nil), displayedDate: date)
         _ = try? await (a, b, c)
 
         let events = await recorder.events
@@ -129,7 +171,7 @@ struct ActionItemsWriterTests {
             gitService: nil
         )
         do {
-            _ = try await writer.submit(.markDone(subject: "X"), displayedDate: Date())
+            _ = try await writer.submit(.markDone(subject: "X", shortPrefix: nil), displayedDate: Date())
             Issue.record("expected throw")
         } catch let err as ActionItemsWriterError {
             switch err {
@@ -159,7 +201,7 @@ struct ActionItemsWriterTests {
             gitService: nil
         )
         do {
-            _ = try await writer.submit(.reopen(subject: "X"), displayedDate: Date())
+            _ = try await writer.submit(.reopen(subject: "X", shortPrefix: nil), displayedDate: Date())
             Issue.record("expected throw")
         } catch let err as ActionItemsWriterError {
             if case let .cliNonZeroExit(_, _, classification) = err {

@@ -1,10 +1,10 @@
 import Foundation
 
 enum WriteOp: Sendable {
-    case addComment(subject: String, text: String, author: String)
-    case markDone(subject: String)
-    case reopen(subject: String)
-    case snooze(subject: String, until: Date)
+    case addComment(subject: String, shortPrefix: String?, text: String, author: String)
+    case markDone(subject: String, shortPrefix: String?)
+    case reopen(subject: String, shortPrefix: String?)
+    case snooze(subject: String, shortPrefix: String?, until: Date)
 
     var verb: String {
         switch self {
@@ -17,8 +17,17 @@ enum WriteOp: Sendable {
 
     var subject: String {
         switch self {
-        case .addComment(let s, _, _), .markDone(let s), .reopen(let s), .snooze(let s, _):
+        case .addComment(let s, _, _, _), .markDone(let s, _),
+             .reopen(let s, _), .snooze(let s, _, _):
             return s
+        }
+    }
+
+    var shortPrefix: String? {
+        switch self {
+        case .addComment(_, let p, _, _), .markDone(_, let p),
+             .reopen(_, let p), .snooze(_, let p, _):
+            return p
         }
     }
 
@@ -35,6 +44,11 @@ enum WriteOp: Sendable {
     /// the action-items markdown file we're writing into; scoutctl uses it
     /// as the positional `[PATH]` arg and decodes the date from the filename.
     ///
+    /// **Target selection:** when `shortPrefix` is non-nil, pass `--by-id`
+    /// for a structural ID match — bypasses the brittle markdown-substring
+    /// path entirely. Fall back to `--subject` only for legacy unprefixed
+    /// lines (carryovers from before the v0.5.5 prefix mandate landed).
+    ///
     /// Notes vs the pre-v0.5.2 legacy-script invocation:
     /// - We embed the author inline in the comment body (`<author>: <text>`)
     ///   because scoutctl's `add-comment` doesn't accept an `--author` flag.
@@ -45,15 +59,19 @@ enum WriteOp: Sendable {
     ///   catches up.
     fileprivate func scoutctlArguments(dailyFilePath: URL) -> [String] {
         var args = ["action-items", scoutctlSubcommand, dailyFilePath.path]
-        args += ["--subject", subject]
+        if let prefix = shortPrefix {
+            args += ["--by-id", prefix]
+        } else {
+            args += ["--subject", subject]
+        }
         switch self {
-        case .addComment(_, let text, let author):
+        case .addComment(_, _, let text, let author):
             args += ["--comment", "\(author): \(text)"]
         case .reopen:
             args += ["--undo"]
         case .markDone:
             break
-        case .snooze(_, let until):
+        case .snooze(_, _, let until):
             let fmt = DateFormatter()
             fmt.dateFormat = "yyyy-MM-dd"
             fmt.timeZone = TimeZone(identifier: "America/New_York")
@@ -89,6 +107,11 @@ struct WriteResult: Sendable {
 /// are legacy — modern scout-plugin installs ship the same logic only via
 /// the `scoutctl action-items` subcommands. Friend-install bug surfaced
 /// the dependency; now the app only needs scoutctl on disk.
+///
+/// v0.5.5: prefers `--by-id <prefix>` over `--subject` when a task carries
+/// a `[#XXXX]` short prefix. The plugin mandates prefixes on every new line
+/// (scout-plugin PR #28), so subject-matching becomes the fallback for
+/// legacy unprefixed carryovers only.
 actor ActionItemsWriter {
     private let scoutctl: URL
     private let argumentsPrefix: [String]

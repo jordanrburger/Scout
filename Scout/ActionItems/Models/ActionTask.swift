@@ -23,6 +23,12 @@ struct ActionTask: Identifiable, Equatable, Hashable, Sendable {
     /// preceding top-level task, etc. Computed from the leading whitespace on
     /// the source line (1 tab = 1 level; otherwise 2 spaces = 1 level).
     let indentLevel: Int
+    /// 4-char Crockford prefix extracted from a `[#XXXX]` marker on the task
+    /// line, if present. Mandated by scout-plugin's action-items skill phase
+    /// since v0.4+; lets scoutctl identify the task via `--by-id` instead of
+    /// the brittle `--subject` substring path. `nil` for legacy unprefixed
+    /// lines — those still go through the subject-matching fallback.
+    let shortPrefix: String?
 
     init(
         id: UUID,
@@ -35,7 +41,8 @@ struct ActionTask: Identifiable, Equatable, Hashable, Sendable {
         deepLinks: [TaskDeepLink],
         snoozedUntil: Date?,
         carriedInFrom: Date?,
-        indentLevel: Int = 0
+        indentLevel: Int = 0,
+        shortPrefix: String? = nil
     ) {
         self.id = id
         self.lineNumber = lineNumber
@@ -48,6 +55,7 @@ struct ActionTask: Identifiable, Equatable, Hashable, Sendable {
         self.snoozedUntil = snoozedUntil
         self.carriedInFrom = carriedInFrom
         self.indentLevel = indentLevel
+        self.shortPrefix = shortPrefix
     }
 
     /// Shortest reliable substring scoutctl's `--subject` matcher can use to

@@ -29,6 +29,26 @@ extension ActionItemsParser {
         let range = NSRange(s.startIndex..., in: s)
         return re.stringByReplacingMatches(in: s, range: range, withTemplate: template)
     }
+
+    /// Extract a leading `[#XXXX] ` short-prefix marker from a task body and
+    /// return both the bare prefix and the body with the marker removed.
+    /// Mirrors scout-plugin's `scout.ids.short_prefix_pattern` — Crockford
+    /// alphabet, 4 chars, `[#XXXX]` shape. Returns `(nil, raw)` on absence.
+    static func extractShortPrefix(_ raw: String) -> (prefix: String?, rest: String) {
+        // Crockford alphabet: 0-9 + uppercase A-Z minus I, L, O, U.
+        // Pattern allows optional surrounding whitespace so `[#ABCD] **subj**`
+        // and `[#ABCD]**subj**` both parse cleanly.
+        guard let re = try? NSRegularExpression(
+            pattern: #"^\[#([0-9A-HJKMNP-TV-Z]{4})\]\s*"#
+        ) else { return (nil, raw) }
+        let range = NSRange(raw.startIndex..., in: raw)
+        guard let m = re.firstMatch(in: raw, range: range),
+              let prefixRange = Range(m.range(at: 1), in: raw),
+              let fullRange = Range(m.range, in: raw) else {
+            return (nil, raw)
+        }
+        return (String(raw[prefixRange]), String(raw[fullRange.upperBound...]))
+    }
 }
 
 extension ActionItemsParser {
@@ -262,7 +282,13 @@ extension ActionItemsParser {
                 let mark = nsLine.substring(with: m.range(at: 2))
                 let rest = nsLine.substring(with: m.range(at: 3))
                 let done = mark.lowercased() == "x"
-                let (subject, body) = splitSubjectBody(rest)
+                // Extract `[#XXXX]` short-prefix (4-char Crockford alphabet)
+                // if present at the start of the task body, and strip it
+                // from the subject so it doesn't pollute the display. Mirrors
+                // scout-plugin's parser.py:_PREFIX_REGEX. Allowed chars:
+                // 0-9 + uppercase A-Z minus I, L, O, U (Crockford set).
+                let (shortPrefix, restWithoutPrefix) = extractShortPrefix(rest)
+                let (subject, body) = splitSubjectBody(restWithoutPrefix)
                 let plainSubj = plainSubject(subject)
                 let deepLinks = detectDeepLinks(in: rest)
                 var snoozedUntil: Date? = nil
@@ -286,7 +312,8 @@ extension ActionItemsParser {
                     deepLinks: deepLinks,
                     snoozedUntil: snoozedUntil,
                     carriedInFrom: carriedInFrom,
-                    indentLevel: indentLevelFor(indent)
+                    indentLevel: indentLevelFor(indent),
+                    shortPrefix: shortPrefix
                 ))
                 i += 1; continue
             }

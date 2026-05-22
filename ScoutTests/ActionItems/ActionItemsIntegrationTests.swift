@@ -45,7 +45,7 @@ struct ActionItemsIntegrationTests {
             gitService: nil
         )
         _ = try await writer.submit(
-            .addComment(subject: "IntegrationTestTask", text: "hello from integration", author: "user"),
+            .addComment(subject: "IntegrationTestTask", shortPrefix: nil, text: "hello from integration", author: "user"),
             displayedDate: date
         )
 

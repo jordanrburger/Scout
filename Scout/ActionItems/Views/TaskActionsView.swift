@@ -17,18 +17,18 @@ struct TaskActionsView: View {
             HStack(spacing: 4) {
                 if task.done {
                     actButton("Reopen", systemImage: "arrow.uturn.backward", style: .plain) {
-                        Task { await onOp(.reopen(subject: task.matchableSubject)) }
+                        Task { await onOp(.reopen(subject: task.matchableSubject, shortPrefix: task.shortPrefix)) }
                     }
                 } else {
                     actButton("Done", systemImage: "checkmark", style: .primary, shortcut: "⌘↵") {
-                        Task { await onOp(.markDone(subject: task.matchableSubject)) }
+                        Task { await onOp(.markDone(subject: task.matchableSubject, shortPrefix: task.shortPrefix)) }
                     }
                     actButton("Snooze", systemImage: "moon.zzz", style: .plain) {
                         showingSnooze = true
                     }
                     .popover(isPresented: $showingSnooze) {
                         SnoozePopoverView(sourceDate: displayedDate) { target in
-                            await onOp(.snooze(subject: task.matchableSubject, until: target))
+                            await onOp(.snooze(subject: task.matchableSubject, shortPrefix: task.shortPrefix, until: target))
                             showingSnooze = false
                         } onCancel: {
                             showingSnooze = false

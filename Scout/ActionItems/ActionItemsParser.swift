@@ -338,7 +338,9 @@ extension ActionItemsParser {
                     comments: last.comments + [newComment],
                     deepLinks: last.deepLinks,
                     snoozedUntil: last.snoozedUntil,
-                    carriedInFrom: last.carriedInFrom
+                    carriedInFrom: last.carriedInFrom,
+                    indentLevel: last.indentLevel,
+                    shortPrefix: last.shortPrefix
                 )
                 currentTasks[currentTasks.count - 1] = updated
                 i += 1; continue
@@ -366,7 +368,9 @@ extension ActionItemsParser {
                     comments: last.comments + [newComment],
                     deepLinks: last.deepLinks,
                     snoozedUntil: last.snoozedUntil,
-                    carriedInFrom: last.carriedInFrom
+                    carriedInFrom: last.carriedInFrom,
+                    indentLevel: last.indentLevel,
+                    shortPrefix: last.shortPrefix
                 )
                 currentTasks[currentTasks.count - 1] = updated
                 i += 1; continue
@@ -390,7 +394,9 @@ extension ActionItemsParser {
                     comments: last.comments + [newComment],
                     deepLinks: last.deepLinks,
                     snoozedUntil: last.snoozedUntil,
-                    carriedInFrom: last.carriedInFrom
+                    carriedInFrom: last.carriedInFrom,
+                    indentLevel: last.indentLevel,
+                    shortPrefix: last.shortPrefix
                 )
                 currentTasks[currentTasks.count - 1] = updated
                 i += 1; continue

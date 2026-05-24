@@ -8,6 +8,7 @@ struct MainWindowView: View {
         VStack(spacing: 0) {
             NavigationSplitView {
                 SidebarView(selection: $selection)
+                    .navigationSplitViewColumnWidth(min: 200, ideal: 220, max: 240)
             } detail: {
                 detail
                     .background(PaperBackdrop())

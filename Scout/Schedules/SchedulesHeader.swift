@@ -43,13 +43,16 @@ struct SchedulesHeader: View {
     }
 
     private var viewToggle: some View {
-        Picker("View", selection: $viewMode) {
-            ForEach(SchedulesViewMode.allCases) { mode in
-                Text(mode.displayName).tag(mode)
-            }
+        HStack(spacing: 4) {
+            Text("View")
+                .font(DS.sans(12))
+                .foregroundStyle(DS.Ink.p3)
+                .padding(.trailing, 4)
+            EditorialSegmentedControl(
+                selection: $viewMode,
+                options: SchedulesViewMode.allCases.map { ($0.displayName, $0) }
+            )
         }
-        .pickerStyle(.segmented)
-        .frame(width: 280)
     }
 
     private var addNewButton: some View {
@@ -59,8 +62,8 @@ struct SchedulesHeader: View {
                 Text("New")
             }
             .font(DS.sans(13, weight: .medium))
-            .padding(.horizontal, 14)
-            .padding(.vertical, 7)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 5)
             .background(DS.Accent.fill, in: RoundedRectangle(cornerRadius: 7))
             .foregroundStyle(DS.Paper.base)
         }

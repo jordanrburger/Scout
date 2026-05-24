@@ -115,13 +115,25 @@ struct SlotEditForm: View {
                     .foregroundStyle(DS.Ink.p3)
             HStack(spacing: 4) {
                 ForEach(["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"], id: \.self) { day in
-                    Toggle(day, isOn: Binding(
-                        get: { draft.weekdays.contains(day) },
-                        set: { on in
-                            if on { draft.weekdays.insert(day) } else { draft.weekdays.remove(day) }
-                        }
-                    ))
-                    .toggleStyle(.button)
+                    let isOn = draft.weekdays.contains(day)
+                    Button {
+                        if isOn { draft.weekdays.remove(day) } else { draft.weekdays.insert(day) }
+                    } label: {
+                        Text(day)
+                            .font(DS.sans(13, weight: .medium))
+                            .lineLimit(1)
+                            .fixedSize(horizontal: true, vertical: false)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 5)
+                            .frame(minWidth: 44)
+                            .background(
+                                RoundedRectangle(cornerRadius: 7)
+                                    .fill(isOn ? DS.Ink.p1 : DS.Paper.raised)
+                                    .overlay(RoundedRectangle(cornerRadius: 7).strokeBorder(DS.Rule.soft, lineWidth: 0.5))
+                            )
+                            .foregroundStyle(isOn ? DS.Paper.base : DS.Ink.p2)
+                    }
+                    .buttonStyle(.plain)
                 }
             }
             if let err = SlotDraft.validateWeekdays(Array(draft.weekdays)) {
@@ -138,13 +150,15 @@ struct SlotEditForm: View {
                     .tracking(1)
                     .textCase(.uppercase)
                     .foregroundStyle(DS.Ink.p3)
-            Picker("", selection: $draft.onMiss) {
-                Text("Fire").tag(OnMissPolicy.fire)
-                Text("Skip").tag(OnMissPolicy.skip)
-                Text("Collapse").tag(OnMissPolicy.collapse)
-            }
-            .pickerStyle(.segmented)
-            .frame(width: 240)
+            EditorialSegmentedControl(
+                selection: $draft.onMiss,
+                options: [
+                    ("Fire", OnMissPolicy.fire),
+                    ("Skip", OnMissPolicy.skip),
+                    ("Collapse", OnMissPolicy.collapse),
+                ],
+                minSegmentWidth: 70
+            )
         }
     }
 
@@ -193,12 +207,10 @@ struct SlotEditForm: View {
                     .tracking(1)
                     .textCase(.uppercase)
                     .foregroundStyle(DS.Ink.p3)
-                Picker("", selection: $draft.type) {
-                    ForEach(SlotType.allCases, id: \.self) { t in
-                        Text(t.rawValue.capitalized).tag(t)
-                    }
-                }
-                .pickerStyle(.segmented)
+                EditorialSegmentedControl(
+                    selection: $draft.type,
+                    options: SlotType.allCases.map { ($0.rawValue.capitalized, $0) }
+                )
             }
             VStack(alignment: .leading, spacing: 4) {
                 Text("Runtime")
@@ -206,12 +218,16 @@ struct SlotEditForm: View {
                     .tracking(1)
                     .textCase(.uppercase)
                     .foregroundStyle(DS.Ink.p3)
-                Picker("", selection: $draft.runtime) {
-                    Text("Local").tag(SlotRuntime.local)
-                    Text("Remote (Plan 7)").tag(SlotRuntime.remote)
-                }
-                .pickerStyle(.segmented)
+                EditorialSegmentedControl(
+                    selection: $draft.runtime,
+                    options: [
+                        ("Local", SlotRuntime.local),
+                        ("Remote (Plan 7)", SlotRuntime.remote),
+                    ],
+                    minSegmentWidth: 110
+                )
                 .disabled(true)
+                .opacity(0.5)
                 Text("Remote slot execution arrives in Plan 7 (Anthropic routines integration).")
                     .font(.caption).foregroundStyle(.secondary)
             }

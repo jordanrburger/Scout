@@ -35,12 +35,11 @@ struct LogViewer: View {
                 .textFieldStyle(.roundedBorder)
                 .frame(maxWidth: 320)
             Spacer()
-            Picker("", selection: $showRaw) {
-                Text("Pretty").tag(false)
-                Text("Raw").tag(true)
-            }
-            .pickerStyle(.segmented)
-            .frame(width: 160)
+            EditorialSegmentedControl(
+                selection: $showRaw,
+                options: [("Pretty", false), ("Raw", true)],
+                minSegmentWidth: 72
+            )
             Button {
                 NSWorkspace.shared.open(logPath)
             } label: {

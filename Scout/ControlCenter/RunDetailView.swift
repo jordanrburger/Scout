@@ -1,31 +1,39 @@
 import SwiftUI
 import AppKit
 
+enum RunDetailTab: String, CaseIterable, Identifiable, Hashable {
+    case summary, log, diff, files, tools, errors, feedback
+    var id: String { rawValue }
+    var displayName: String {
+        switch self {
+        case .summary:  return "Summary"
+        case .log:      return "Log"
+        case .diff:     return "Diff"
+        case .files:    return "Files"
+        case .tools:    return "Tools"
+        case .errors:   return "Errors"
+        case .feedback: return "Feedback"
+        }
+    }
+}
+
 struct RunDetailView: View {
     let run: Run
     @EnvironmentObject var state: AppState
     @State private var confirmRetry = false
     @State private var resolvedCommits: [Commit] = []
+    @SceneStorage("runDetailTab") private var tab: RunDetailTab = .summary
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             header
-            TabView {
-                SummaryTab(logPath: run.logPath)
-                    .tabItem { Label("Summary", systemImage: "text.alignleft") }
-                LogViewer(logPath: run.logPath)
-                    .tabItem { Label("Log", systemImage: "doc.text") }
-                DiffViewer(commits: resolvedCommits)
-                    .tabItem { Label("Diff", systemImage: "arrow.triangle.branch") }
-                FilesTab(run: run)
-                    .tabItem { Label("Files", systemImage: "folder") }
-                ToolsTab(run: run)
-                    .tabItem { Label("Tools", systemImage: "wrench.and.screwdriver") }
-                ErrorsTab(errors: run.errorsDetected)
-                    .tabItem { Label("Errors", systemImage: "exclamationmark.triangle") }
-                FeedbackTab(run: run)
-                    .tabItem { Label("Feedback", systemImage: "bubble.left.and.bubble.right") }
-            }
+            EditorialSegmentedControl(
+                selection: $tab,
+                options: RunDetailTab.allCases.map { ($0.displayName, $0) },
+                minSegmentWidth: 70
+            )
+            tabContent
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             actionBar
         }
         .padding()
@@ -33,6 +41,19 @@ struct RunDetailView: View {
         .task(id: run.id) {
             // Resolve commits lazily on run selection to keep launch fast.
             resolvedCommits = await state.sessionLogService.commits(for: run)
+        }
+    }
+
+    @ViewBuilder
+    private var tabContent: some View {
+        switch tab {
+        case .summary:  SummaryTab(logPath: run.logPath)
+        case .log:      LogViewer(logPath: run.logPath)
+        case .diff:     DiffViewer(commits: resolvedCommits)
+        case .files:    FilesTab(run: run)
+        case .tools:    ToolsTab(run: run)
+        case .errors:   ErrorsTab(errors: run.errorsDetected)
+        case .feedback: FeedbackTab(run: run)
         }
     }
 

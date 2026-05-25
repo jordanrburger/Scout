@@ -19,7 +19,7 @@ struct SidebarView: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 14)
-        .frame(minWidth: 210, maxWidth: 240, maxHeight: .infinity, alignment: .topLeading)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(
             LinearGradient(
                 colors: [DS.Paper.sunk, DS.Paper.base],

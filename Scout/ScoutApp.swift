@@ -9,7 +9,7 @@ struct ScoutApp: App {
         WindowGroup("Scout") {
             MainWindowView()
                 .environmentObject(appState)
-                .frame(minWidth: 1000, minHeight: 640)
+                .frame(minWidth: 1100, minHeight: 640)
         }
         .commands {
             CommandGroup(replacing: .newItem) { }  // suppress File > New Window

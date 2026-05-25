@@ -15,10 +15,10 @@ struct SchedulesView: View {
     @State private var isInitialLoading = true
 
     var body: some View {
-        NavigationSplitView {
+        HStack(spacing: 0) {
             masterPane
-                .navigationSplitViewColumnWidth(ideal: 720, max: .infinity)
-        } detail: {
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            Divider()
             SchedulesDetailPane(
                 slot: detailSlot,
                 isNewDraft: detailIsNewDraft,
@@ -27,7 +27,7 @@ struct SchedulesView: View {
                 onFireNow: handleFireNow,
                 onRevertNewDraft: detailIsNewDraft ? { newDraftSlot = nil; selectedSlotKey = nil } : nil
             )
-            .navigationSplitViewColumnWidth(min: 360, ideal: 420)
+            .frame(width: 380)
         }
         .background(DS.Paper.base)
         .task { await reload() }

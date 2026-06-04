@@ -10,6 +10,7 @@ struct ActionItemsView: View {
 
     @State private var displayedDate: Date = Self.todayET()
     @State private var filter = ActionItemsFilter(kinds: [], status: .all, searchText: "")
+    @SceneStorage("actionItemsView") private var viewMode: ActionItemsViewMode = .list
     @State private var toast: String?
     @FocusState private var searchFocused: Bool
 
@@ -18,11 +19,17 @@ struct ActionItemsView: View {
             if !envCheck.result.ok {
                 environmentBanner
             }
-            FilterChipsView(filter: $filter)
-                .padding(.horizontal, 22)
-                .padding(.vertical, 8)
-                .background(DS.Paper.base.opacity(0.94))
-                .overlay(alignment: .bottom) { EditorialRule() }
+            HStack(spacing: 10) {
+                FilterChipsView(filter: $filter)
+                EditorialSegmentedControl(
+                    selection: $viewMode,
+                    options: ActionItemsViewMode.allCases.map { ($0.displayName, $0) }
+                )
+            }
+            .padding(.horizontal, 22)
+            .padding(.vertical, 8)
+            .background(DS.Paper.base.opacity(0.94))
+            .overlay(alignment: .bottom) { EditorialRule() }
             content
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -63,6 +70,18 @@ struct ActionItemsView: View {
 
     @ViewBuilder
     private var content: some View {
+        // Board mode renders a full-bleed, horizontally scrolling status board.
+        // Every other case (List mode, plus the loading/missing/failed states)
+        // uses the editorial reading page below.
+        if case .loaded(let doc) = docService.state, viewMode == .board {
+            BoardView(sections: boardSections(doc))
+        } else {
+            listContent
+        }
+    }
+
+    @ViewBuilder
+    private var listContent: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 0) {
                 switch docService.state {
@@ -315,6 +334,13 @@ struct ActionItemsView: View {
 
     private func docServiceExpectedURL() -> URL {
         docService.url(for: displayedDate)
+    }
+
+    /// Sections for the board: the same consolidated + kind/status/search
+    /// filtered task set the List shows, so the two views stay in sync. The
+    /// board buckets these by kind into columns.
+    private func boardSections(_ doc: ActionItemsDocument) -> [ActionSection] {
+        filteredSections(doc).map { filtered($0) }
     }
 
     private func filteredSections(_ doc: ActionItemsDocument) -> [ActionSection] {

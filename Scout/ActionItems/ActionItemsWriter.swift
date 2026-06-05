@@ -219,6 +219,25 @@ actor ActionItemsWriter {
         return try await task.value
     }
 
+    /// Read the `[#XXXX]` prefix on a specific 1-based line of an action-items
+    /// file, or nil if that line has no prefix / doesn't exist. Used by the
+    /// safety-net after a just-in-time backfill — line numbers are stable
+    /// because `backfill_prefixes` edits lines in place (no insert/remove).
+    static func shortPrefix(inFile url: URL, atLine line: Int) -> String? {
+        guard line >= 1,
+              let text = try? String(contentsOf: url, encoding: .utf8) else { return nil }
+        let lines = text.components(separatedBy: "\n")
+        guard line <= lines.count else { return nil }
+        let target = lines[line - 1]
+        guard let re = try? NSRegularExpression(
+            pattern: #"^\s*- \[[ xX]\] \[#([0-9A-HJKMNP-TV-Z]{4})\]"#
+        ) else { return nil }
+        let range = NSRange(target.startIndex..., in: target)
+        guard let m = re.firstMatch(in: target, range: range),
+              let r = Range(m.range(at: 1), in: target) else { return nil }
+        return String(target[r])
+    }
+
     private static func perform(
         op: WriteOp,
         displayedDate: Date,

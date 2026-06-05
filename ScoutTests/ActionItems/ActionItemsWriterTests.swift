@@ -268,6 +268,24 @@ struct ActionItemsWriterTests {
         }
     }
 
+    @Test func readsShortPrefixAtLineNumber() throws {
+        let tmp = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("ai-\(UUID().uuidString).md")
+        let md = """
+        # Title
+
+        ## 🔴 Urgent
+
+        - [ ] [#AB12] **First** — body
+        - [ ] **Unprefixed** — body
+        """
+        try md.write(to: tmp, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        #expect(ActionItemsWriter.shortPrefix(inFile: tmp, atLine: 5) == "AB12")
+        #expect(ActionItemsWriter.shortPrefix(inFile: tmp, atLine: 6) == nil)
+        #expect(ActionItemsWriter.shortPrefix(inFile: tmp, atLine: 999) == nil)
+    }
+
     @Test func classifiesNoSuchOptionAsEnvironment() async throws {
         // Old scoutctl: doesn't know `--undo`. Surfaces as "no such option";
         // writer classifies it as `.environment` so the UI banner can prompt

@@ -200,13 +200,14 @@ actor ActionItemsWriter {
     /// Submit a write. Submissions are strictly serialized — only one CLI
     /// runs end-to-end at a time, even across concurrent callers.
     @discardableResult
-    func submit(_ op: WriteOp, displayedDate: Date) async throws -> WriteResult {
+    func submit(_ op: WriteOp, displayedDate: Date, recoveryLineNumber: Int? = nil) async throws -> WriteResult {
         let previous = tail
         let task = Task { [scoutctl, argumentsPrefix, runner, actionItemsDirectory, scoutDirectory, gitService] in
             _ = await previous?.value
             return try await Self.perform(
                 op: op,
                 displayedDate: displayedDate,
+                recoveryLineNumber: recoveryLineNumber,
                 scoutctl: scoutctl,
                 argumentsPrefix: argumentsPrefix,
                 actionItemsDirectory: actionItemsDirectory,
@@ -241,6 +242,7 @@ actor ActionItemsWriter {
     private static func perform(
         op: WriteOp,
         displayedDate: Date,
+        recoveryLineNumber: Int?,
         scoutctl: URL,
         argumentsPrefix: [String],
         actionItemsDirectory: URL,
@@ -268,11 +270,36 @@ actor ActionItemsWriter {
 
         let stderr = String(data: result.stderr, encoding: .utf8) ?? ""
         if result.exitCode != 0 {
+            let cls = Self.classify(exitCode: result.exitCode, stderr: stderr)
+            // Safety net: an unprefixed op missed on --subject. Mint prefixes via a
+            // one-shot backfill, then retry by stable id. One attempt only.
+            if cls == .noMatch, op.shortPrefix == nil, let line = recoveryLineNumber {
+                _ = try? await runner.run(
+                    executable: scoutctl,
+                    arguments: argumentsPrefix + ["action-items", "backfill-prefixes", dailyFile.path],
+                    environment: [:], workingDirectory: scoutDirectory)
+                if let prefix = Self.shortPrefix(inFile: dailyFile, atLine: line) {
+                    let retryOp = op.withShortPrefix(prefix)
+                    let retry: ProcessResult
+                    do {
+                        retry = try await runner.run(
+                            executable: scoutctl,
+                            arguments: argumentsPrefix + retryOp.scoutctlArguments(dailyFilePath: dailyFile),
+                            environment: [:], workingDirectory: scoutDirectory)
+                    } catch { throw ActionItemsWriterError.processFailed(error) }
+                    let retryStderr = String(data: retry.stderr, encoding: .utf8) ?? ""
+                    if retry.exitCode == 0 {
+                        let slug = Self.slugify(op.subject)
+                        try? await gitService?.commitAll(message: "action-items: \(op.verb) \(slug)")
+                        return WriteResult(stderr: retryStderr)
+                    }
+                    throw ActionItemsWriterError.cliNonZeroExit(
+                        exitCode: retry.exitCode, stderr: retryStderr,
+                        classification: Self.classify(exitCode: retry.exitCode, stderr: retryStderr))
+                }
+            }
             throw ActionItemsWriterError.cliNonZeroExit(
-                exitCode: result.exitCode,
-                stderr: stderr,
-                classification: Self.classify(exitCode: result.exitCode, stderr: stderr)
-            )
+                exitCode: result.exitCode, stderr: stderr, classification: cls)
         }
 
         let slug = Self.slugify(op.subject)

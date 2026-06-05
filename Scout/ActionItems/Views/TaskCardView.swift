@@ -266,7 +266,7 @@ struct TaskCardView: View {
                 kind: effectiveKind,
                 displayedDate: displayedDate,
                 scoutDirectory: scoutDirectory
-            ) { op, _ in
+            ) { op in
                 await runOp(op)
             }
 

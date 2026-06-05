@@ -8,7 +8,7 @@ struct TaskActionsView: View {
     let kind: ActionSection.Kind
     let displayedDate: Date
     let scoutDirectory: URL
-    let onOp: (WriteOp) async -> Void
+    let onOp: @MainActor (WriteOp) async -> Void
 
     @State private var showingSnooze = false
     @State private var launchError: String?

@@ -13,7 +13,12 @@ struct TaskCardView: View {
     let kind: ActionSection.Kind
     let displayedDate: Date
     let scoutDirectory: URL
-    let onOp: (WriteOp, Int?) async throws -> Void
+    // `@MainActor` is load-bearing: with default-MainActor + approachable
+    // concurrency, a non-isolated async closure type would carry the WriteOp
+    // across an isolation boundary as a `sending` value, and the reabstraction
+    // thunk over-releases its String payloads → EXC_BAD_ACCESS reading the op
+    // in the writer. Keeping the closure MainActor-isolated avoids that hop.
+    let onOp: @MainActor (WriteOp, Int?) async throws -> Void
 
     @State private var inlineError: String?
     @State private var expanded: Bool
@@ -24,7 +29,7 @@ struct TaskCardView: View {
         kind: ActionSection.Kind,
         displayedDate: Date,
         scoutDirectory: URL,
-        onOp: @escaping (WriteOp, Int?) async throws -> Void
+        onOp: @escaping @MainActor (WriteOp, Int?) async throws -> Void
     ) {
         self.task = task
         self.kind = kind

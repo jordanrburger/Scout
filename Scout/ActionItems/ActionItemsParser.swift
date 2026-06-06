@@ -30,16 +30,19 @@ extension ActionItemsParser {
         return re.stringByReplacingMatches(in: s, range: range, withTemplate: template)
     }
 
-    /// Extract a leading `[#XXXX] ` short-prefix marker from a task body and
+    /// Extract a leading `[#TAG] ` short-prefix marker from a task body and
     /// return both the bare prefix and the body with the marker removed.
-    /// Mirrors scout-plugin's `scout.ids.short_prefix_pattern` — Crockford
-    /// alphabet, 4 chars, `[#XXXX]` shape. Returns `(nil, raw)` on absence.
+    /// Mirrors scout-plugin's widened `scout.ids.short_prefix_pattern`:
+    /// 2–8 chars of `[A-Z0-9]` with at least one letter (so `[#MIRO]`,
+    /// `[#AI3026]`, `[#RSM]`, `[#5864M]` are recognized). Pure-numeric refs
+    /// like `[#555]` are rejected — those are GitHub issue refs rendered by
+    /// the GitHubRefLinkifier. Returns `(nil, raw)` on absence.
     static func extractShortPrefix(_ raw: String) -> (prefix: String?, rest: String) {
-        // Crockford alphabet: 0-9 + uppercase A-Z minus I, L, O, U.
-        // Pattern allows optional surrounding whitespace so `[#ABCD] **subj**`
-        // and `[#ABCD]**subj**` both parse cleanly.
+        // Lookahead bounds total length to 2–8 [A-Z0-9]; capture group 1
+        // requires ≥1 letter. Pattern allows optional surrounding whitespace
+        // so `[#ABCD] **subj**` and `[#ABCD]**subj**` both parse cleanly.
         guard let re = try? NSRegularExpression(
-            pattern: #"^\[#([0-9A-HJKMNP-TV-Z]{4})\]\s*"#
+            pattern: #"^\[#(?=[A-Z0-9]{2,8}\])([A-Z0-9]*[A-Z][A-Z0-9]*)\]\s*"#
         ) else { return (nil, raw) }
         let range = NSRange(raw.startIndex..., in: raw)
         guard let m = re.firstMatch(in: raw, range: range),

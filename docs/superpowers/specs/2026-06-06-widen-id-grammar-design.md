@@ -17,9 +17,9 @@ Consequences on the real vault:
 Widen the **recognition** of an identifier to `[A-Z0-9]{2,8}` (uppercase, start-anchored) everywhere it's parsed, and reconcile the generation prompt to encourage semantic tags. Recognition-only — what `new_short_prefix` *mints* is unchanged.
 
 Approved decisions (from brainstorming):
-- **Grammar:** `^\[#([A-Z0-9]{2,8})\]` — uppercase letters + digits, length 2–8, anchored at the start of the task body. Crockford-4 codes remain a valid subset, so `new-prefix` output still parses.
+- **Grammar:** 2–8 chars of `[A-Z0-9]` that **must contain ≥1 letter** — recognition regex `\[#(?=[A-Z0-9]{2,8}\])([A-Z0-9]*[A-Z][A-Z0-9]*)\]` (group 1 = bare tag), anchored at the start of the task body for extraction. The ≥1-letter rule rejects pure-numeric tokens like `[#555]`, which the codebase's `GitHubRefLinkifier` renders for GitHub issue refs — without it, a body ref shape would be indistinguishable from a stable-ID tag. `new_short_prefix` is updated to guarantee minted prefixes contain a letter, so Crockford-4 mints remain a valid (recognizable) subset.
 - **Prompt guidance:** rewrite the "Hard Rule" to encourage a short meaningful mnemonic `[#TAG]`, with `scoutctl action-items new-prefix` as the fallback when nothing fits; carry-forward copies the tag verbatim; self-check grep becomes `[#[A-Z0-9]{2,8}]`.
-- **`--by-id` becomes ambiguity-aware:** today `_common.resolve_target` `next()`-picks the first item whose `short_prefix` matches; with reusable semantic tags, 2+ open matches must raise the existing ambiguous error (exit 3). (Random Crockford codes effectively never collided; human tags can.)
+- **`--by-id` becomes ambiguity-aware:** today `_common.resolve_target` `next()`-picks the first item whose `short_prefix` matches; with reusable semantic tags, 2+ open matches must raise the existing ambiguous error (ActionItemError, exit 21 — same class as the --by-subject ambiguity). (Random Crockford codes effectively never collided; human tags can.)
 - **`new_short_prefix` unchanged:** keeps minting random 4-char Crockford as the fallback identifier.
 
 ## Architecture — the one lever and its ripples
@@ -52,7 +52,7 @@ scout-app extractShortPrefix widened  ──►  ActionTask.shortPrefix populate
 
 **`engine/scout/action_items/parser.py`**: extract the leading tag with the **anchored** pattern instead of today's `.search()` (with a wider charset, `.search()` could match a bracketed token mid-title; anchoring to the title start is correct and matches the Swift parser's `^`).
 
-**`engine/scout/action_items/_common.py`** (`resolve_target`, `--by-id` branch): collect *all* open items whose `short_prefix == by_id`; if more than one, raise `ActionItemError` ("ambiguous id …", exit 3) mirroring the `--by-subject` ambiguity path; if exactly one, proceed (lazy-register into id-map as today). Single-match behavior and lazy registration are unchanged.
+**`engine/scout/action_items/_common.py`** (`resolve_target`, `--by-id` branch): collect *all* open items whose `short_prefix == by_id`; if more than one, raise `ActionItemError` ("ambiguous id …", ActionItemError exit 21) mirroring the `--by-subject` ambiguity path; if exactly one, proceed (lazy-register into id-map as today). Single-match behavior and lazy registration are unchanged.
 
 **`engine/scout/action_items/backfill.py`** and **`writer.add_prefix_to_line`**: no logic change — both inherit the widened pattern (candidates still `short_prefix is None`; the guard still refuses lines that already match).
 
@@ -74,7 +74,7 @@ scout-app extractShortPrefix widened  ──►  ActionTask.shortPrefix populate
 **scout-plugin unit tests:**
 - `test_ids`: the recognition pattern accepts `MIRO`/`AI3026`/`RSM`/`P3WISH`/4-char Crockford, and rejects `<2` chars, `>8` chars, lowercase, and embedded punctuation.
 - `test_action_items_parser`: a line led by `[#AI3026]`/`[#MIRO]` yields `short_prefix == "AI3026"`/`"MIRO"` with the tag stripped from the title; a mid-title bracketed token is **not** mistaken for the prefix (anchoring).
-- `test_action_items_common`: `--by-id` on a tag shared by two open items raises ambiguous (exit 3); single match still resolves + lazy-registers.
+- `test_action_items_common`: `--by-id` on a tag shared by two open items raises ambiguous (ActionItemError, exit 21); single match still resolves + lazy-registers.
 - `test_post_session_backfill` / backfill unit: a `[#TAG]` line is left untouched (no second prefix added); only genuinely bare lines get one.
 
 **scout-app tests:**

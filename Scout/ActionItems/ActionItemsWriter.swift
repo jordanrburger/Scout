@@ -230,8 +230,10 @@ actor ActionItemsWriter {
         let lines = text.components(separatedBy: "\n")
         guard line <= lines.count else { return nil }
         let target = lines[line - 1]
+        // Grammar matches the parser: 2–8 [A-Z0-9] with ≥1 letter (capture
+        // group 1); rejects pure-numeric GitHub issue refs like `[#555]`.
         guard let re = try? NSRegularExpression(
-            pattern: #"^\s*- \[[ xX]\] \[#([0-9A-HJKMNP-TV-Z]{4})\]"#
+            pattern: #"^\s*- \[[ xX]\] \[#(?=[A-Z0-9]{2,8}\])([A-Z0-9]*[A-Z][A-Z0-9]*)\]"#
         ) else { return nil }
         let range = NSRange(target.startIndex..., in: target)
         guard let m = re.firstMatch(in: target, range: range),

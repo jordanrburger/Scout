@@ -23,7 +23,7 @@ struct ActionTask: Identifiable, Equatable, Hashable, Sendable {
     /// preceding top-level task, etc. Computed from the leading whitespace on
     /// the source line (1 tab = 1 level; otherwise 2 spaces = 1 level).
     let indentLevel: Int
-    /// 4-char Crockford prefix extracted from a `[#XXXX]` marker on the task
+    /// Stable `[#TAG]` id (2-8 [A-Z0-9], >=1 letter) extracted from a marker on the task
     /// line, if present. Mandated by scout-plugin's action-items skill phase
     /// since v0.4+; lets scoutctl identify the task via `--by-id` instead of
     /// the brittle `--subject` substring path. `nil` for legacy unprefixed

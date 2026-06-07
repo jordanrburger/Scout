@@ -301,11 +301,12 @@ extension ActionItemsParser {
                 let mark = nsLine.substring(with: m.range(at: 2))
                 let rest = nsLine.substring(with: m.range(at: 3))
                 let done = mark.lowercased() == "x"
-                // Extract `[#XXXX]` short-prefix (4-char Crockford alphabet)
-                // if present at the start of the task body, and strip it
-                // from the subject so it doesn't pollute the display. Mirrors
-                // scout-plugin's parser.py:_PREFIX_REGEX. Allowed chars:
-                // 0-9 + uppercase A-Z minus I, L, O, U (Crockford set).
+                // Extract the leading `[#TAG]` short-prefix if present at the
+                // start of the task body, and strip it from the subject so it
+                // doesn't pollute the display. Mirrors scout-plugin's
+                // parser.py / scout.ids recognition grammar: 2-8 chars of
+                // [A-Z0-9] with >=1 letter (pure-numeric like `[#555]` is a
+                // GitHub ref, not a tag). See scout-plugin#117.
                 let (shortPrefix, restWithoutPrefix) = extractShortPrefix(rest)
                 let (subject, body) = splitSubjectBody(restWithoutPrefix)
                 let plainSubj = plainSubject(subject)

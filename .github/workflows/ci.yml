@@ -1,0 +1,65 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Cancel an in-flight run when new commits land on the same ref.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: ScoutTests
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      # The project's deployment target is macOS 15.7, so the build needs an
+      # SDK >= 15.7 (Xcode 26+). GitHub's image default Xcode can lag, so pick
+      # the newest stable Xcode installed on the runner explicitly.
+      - name: Select newest Xcode
+        run: |
+          newest="$(ls -d /Applications/Xcode_*.app 2>/dev/null \
+            | grep -E '/Xcode_[0-9.]+\.app$' | sort -V | tail -1)"
+          if [ -n "$newest" ]; then
+            echo "Selecting $newest"
+            sudo xcode-select -s "$newest/Contents/Developer"
+          else
+            echo "No Xcode_<version>.app found; using image default."
+          fi
+
+      - name: Toolchain info
+        run: |
+          xcodebuild -version
+          echo "--- macOS SDKs ---"
+          xcodebuild -showsdks | grep -i macos || true
+
+      - name: Run ScoutTests
+        run: |
+          set -o pipefail
+          xcodebuild test \
+            -project Scout.xcodeproj \
+            -scheme Scout \
+            -destination 'platform=macOS' \
+            -only-testing:ScoutTests \
+            -resultBundlePath TestResults.xcresult \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            | tee xcodebuild.log
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: TestResults
+          path: |
+            TestResults.xcresult
+            xcodebuild.log
+          if-no-files-found: ignore

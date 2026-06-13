@@ -205,33 +205,50 @@ struct SystemProcessRunner: ProcessRunner {
         environment: [String: String],
         workingDirectory: URL?
     ) async throws -> ProcessResult {
-        try await withCheckedThrowingContinuation { cont in
-            let p = Process()
-            p.executableURL = executable
-            p.arguments = arguments
-            p.currentDirectoryURL = workingDirectory
-            if !environment.isEmpty {
-                var env = ProcessInfo.processInfo.environment
-                for (k, v) in environment { env[k] = v }
-                p.environment = env
-            }
-            let outPipe = Pipe()
-            let errPipe = Pipe()
-            p.standardOutput = outPipe
-            p.standardError = errPipe
-            p.terminationHandler = { proc in
-                let out = outPipe.fileHandleForReading.readDataToEndOfFile()
-                let err = errPipe.fileHandleForReading.readDataToEndOfFile()
-                cont.resume(returning: ProcessResult(
-                    exitCode: proc.terminationStatus,
-                    stdout: out,
-                    stderr: err
-                ))
-            }
-            do {
-                try p.run()
-            } catch {
-                cont.resume(throwing: error)
+        let p = Process()
+        p.executableURL = executable
+        p.arguments = arguments
+        p.currentDirectoryURL = workingDirectory
+        if !environment.isEmpty {
+            var env = ProcessInfo.processInfo.environment
+            for (k, v) in environment { env[k] = v }
+            p.environment = env
+        }
+        let outPipe = Pipe()
+        let errPipe = Pipe()
+        p.standardOutput = outPipe
+        p.standardError = errPipe
+
+        // `run()` launches and returns immediately; it throws synchronously if
+        // the executable can't be spawned. Start draining only after a
+        // successful launch so the error path never leaks a blocked reader.
+        try p.run()
+
+        // Drain both pipes concurrently rather than reading them inside the
+        // termination handler. A child that writes more than the ~64KB pipe
+        // buffer blocks on write until someone reads; a terminationHandler-only
+        // reader never runs (the child can't terminate), so the call deadlocks
+        // and silently wedges whatever awaited it — schedule refreshes, the
+        // writer's git commits, etc. (issue #22 audit). `readDataToEndOfFile`
+        // returns at EOF, which the child reaches once we've drained it.
+        async let outData = Self.drain(outPipe.fileHandleForReading)
+        async let errData = Self.drain(errPipe.fileHandleForReading)
+        let out = await outData
+        let err = await errData
+
+        // Both pipes hit EOF → the child has closed its write ends and is
+        // essentially done; this reaps it so `terminationStatus` is valid and
+        // returns near-instantly.
+        p.waitUntilExit()
+        return ProcessResult(exitCode: p.terminationStatus, stdout: out, stderr: err)
+    }
+
+    /// Read a file handle to EOF on a background thread, off the cooperative
+    /// executor, so the blocking read can't starve Swift concurrency.
+    private static func drain(_ handle: FileHandle) async -> Data {
+        await withCheckedContinuation { cont in
+            DispatchQueue.global(qos: .userInitiated).async {
+                cont.resume(returning: handle.readDataToEndOfFile())
             }
         }
     }

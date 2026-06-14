@@ -1,5 +1,6 @@
 import Testing
 import Foundation
+import Combine
 @testable import Scout
 
 @Suite("SessionLogService")
@@ -472,6 +473,92 @@ struct SessionLogServiceTests {
         let out = SessionLogService.resolveStaleRunning([differentTypeTerminal, onlyRunning])
         let stillRunning = out.first { $0.id == onlyRunning.id }
         #expect(stillRunning?.status == .running)
+    }
+
+    // MARK: - reconcile (file-event path)
+
+    /// End-to-end coverage of the FSEvent → reconcile path that BACKLOG
+    /// flagged as untested: a log file appearing after loadInitial() must
+    /// surface as a new Run without any further loadInitial() call.
+    @Test @MainActor func reconcile_picksUpNewRunFromFileEvent() async throws {
+        let tempDir = try FileManager.default.url(
+            for: .itemReplacementDirectory, in: .userDomainMask,
+            appropriateFor: FileManager.default.temporaryDirectory, create: true
+        )
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let trackerURL = tempDir.appendingPathComponent("usage-tracker.jsonl")
+        try "".write(to: trackerURL, atomically: true, encoding: .utf8)
+        let tracker = UsageTrackerService(trackerURL: trackerURL, fileEvents: NoopFS())
+        _ = try await tracker.loadInitial()
+
+        let fakeFS = InjectableFS()
+        let service = SessionLogService(
+            logsDirectory: tempDir,
+            trackerService: tracker,
+            fileEvents: fakeFS,
+            timeZone: Self.ny
+        )
+        let initial = try await service.loadInitial()
+        #expect(initial.isEmpty)
+
+        let logURL = tempDir.appendingPathComponent("scout-2026-04-20_08-03.log")
+        try """
+        === SCOUT run starting at Mon Apr 20 08:03:01 EDT 2026 ===
+        === SCOUT run finished at Mon Apr 20 08:10:00 EDT 2026 (exit code: 0, duration: 419s) ===
+        """.write(to: logURL, atomically: true, encoding: .utf8)
+        fakeFS.emit(FileSystemEvent(url: logURL, kind: .created))
+
+        var tries = 0
+        while tries < 40 {
+            try await Task.sleep(nanoseconds: 50_000_000)
+            if service.runs.count == 1 { break }
+            tries += 1
+        }
+        #expect(service.runs.count == 1, "file event did not produce a Run")
+        #expect(service.runs.first?.status == .success)
+        #expect(service.runs.first?.type == .morningBriefing)
+    }
+
+    /// Issue #22: a burst of FSEvents for the same log (continuous appends
+    /// during a session run) must coalesce into a small number of reconcile
+    /// publishes, not one full re-parse per event.
+    @Test @MainActor func reconcile_coalescesEventBursts() async throws {
+        let tempDir = try FileManager.default.url(
+            for: .itemReplacementDirectory, in: .userDomainMask,
+            appropriateFor: FileManager.default.temporaryDirectory, create: true
+        )
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let logURL = tempDir.appendingPathComponent("scout-2026-04-20_08-03.log")
+        try "=== SCOUT run starting at Mon Apr 20 08:03:01 EDT 2026 ===\n"
+            .write(to: logURL, atomically: true, encoding: .utf8)
+
+        let trackerURL = tempDir.appendingPathComponent("usage-tracker.jsonl")
+        try "".write(to: trackerURL, atomically: true, encoding: .utf8)
+        let tracker = UsageTrackerService(trackerURL: trackerURL, fileEvents: NoopFS())
+        _ = try await tracker.loadInitial()
+
+        let fakeFS = InjectableFS()
+        let service = SessionLogService(
+            logsDirectory: tempDir,
+            trackerService: tracker,
+            fileEvents: fakeFS,
+            timeZone: Self.ny
+        )
+        _ = try await service.loadInitial()
+
+        final class PublishCounter { var count = 0 }
+        let counter = PublishCounter()
+        let cancellable = service.$runs.dropFirst().sink { _ in counter.count += 1 }
+        defer { cancellable.cancel() }
+
+        for _ in 0..<10 {
+            fakeFS.emit(FileSystemEvent(url: logURL, kind: .modified))
+        }
+        try await Task.sleep(for: .milliseconds(900))
+
+        #expect(counter.count <= 3, "10-event burst caused \(counter.count) reconcile publishes")
     }
 }
 

@@ -33,7 +33,7 @@ final class SessionLogService: ObservableObject {
 
     // MARK: - Filename parsing
 
-    struct ParsedFilename: Equatable {
+    struct ParsedFilename: Equatable, Sendable {
         let runnerScript: String
         let type: RunType
         let startedAt: Date
@@ -127,7 +127,7 @@ final class SessionLogService: ObservableObject {
 
     // MARK: - Body parsing
 
-    struct ParsedBody: Equatable {
+    struct ParsedBody: Equatable, Sendable {
         let endedAt: Date?
         let exitCode: Int?
         let status: RunStatus
@@ -135,33 +135,36 @@ final class SessionLogService: ObservableObject {
         let errorsDetected: [DetectedError]
     }
 
+    // Compiled once and reused. `parseBody` runs on every FSEvent for a log
+    // file; recompiling these five patterns per call was pure overhead on a
+    // hot path (issue #22). The finish-marker pattern matches both historical
+    // casings:
+    //   `=== SCOUT run finished at …`           (pre-2026-05-01)
+    //   `=== Scout Dreaming run finished at …`  (current)
+    // The runner script was renamed in scout-plugin around May 2026 to
+    // mixed-case "Scout"; our regex was still pinned to all-caps "SCOUT" so
+    // every log after the rename parsed as still-running → orphaned (CC-1
+    // follow-up). Case-insensitivity is set via the constructor option so the
+    // whole pattern handles either casing uniformly — inline `(?i:...)` groups
+    // behaved inconsistently across NSRegular builds with lazy optional groups.
+    // The `(?: \w+)?` token allows multi-word run-type prefixes ("Scout
+    // Dreaming", future "Scout Meta Review", etc.). Capture group 3 (duration
+    // seconds) is kept for a future "show duration" surface, currently unused.
+    private static let finishRegex = try! NSRegularExpression(
+        pattern: #"=== Scout(?: \w+)? run finished at (.+?) \(exit code: (-?\d+)(?:, duration: (\d+)s)?\) ==="#,
+        options: [.caseInsensitive]
+    )
+    private static let timeoutRegex = try! NSRegularExpression(pattern: #"=== TIMEOUT:"#)
+    private static let concurrencyRegex = try! NSRegularExpression(pattern: #"=== Another SCOUT session running"#)
+    private static let budgetRegex = try! NSRegularExpression(pattern: #"=== Budget check: skipping this run ==="#)
+    private static let rateLimitRegex = try! NSRegularExpression(pattern: #"Rate limit detected"#)
+
     nonisolated static func parseBody(at url: URL, filename: ParsedFilename) throws -> ParsedBody {
         let data = try Data(contentsOf: url)
         let text = String(data: data, encoding: .utf8) ?? ""
         let size = Int64(data.count)
         let range = NSRange(text.startIndex..., in: text)
 
-        // Matches the runner's "finished" marker across both historical
-        // casings:
-        //   `=== SCOUT run finished at …`           (pre-2026-05-01)
-        //   `=== Scout Dreaming run finished at …`  (current)
-        // The runner script was renamed in scout-plugin around May 2026 to
-        // mixed-case "Scout"; our regex was still pinned to all-caps "SCOUT"
-        // so every log after the rename parsed as still-running → orphaned
-        // (CC-1 follow-up: "May 12 sessions show as orphaned").
-        //
-        // Case-insensitivity is set at the regex level via the constructor
-        // option so the whole pattern handles either casing uniformly —
-        // inline `(?i:...)` groups behaved inconsistently across NSRegular
-        // builds when combined with lazy optional groups. The
-        // `(?:\s[\w ]+?)?` token allows multi-word run-type prefixes
-        // ("Scout Dreaming", future "Scout Meta Review", etc.). Capture
-        // group 3 (duration seconds) is kept for a future "show duration"
-        // surface but is not currently consumed.
-        let finishRegex = try NSRegularExpression(
-            pattern: #"=== Scout(?: \w+)? run finished at (.+?) \(exit code: (-?\d+)(?:, duration: (\d+)s)?\) ==="#,
-            options: [.caseInsensitive]
-        )
         var endedAt: Date? = nil
         var exitCode: Int? = nil
         if let match = finishRegex.firstMatch(in: text, range: range),
@@ -171,13 +174,9 @@ final class SessionLogService: ObservableObject {
             exitCode = Int(text[codeRange])
         }
 
-        let timeoutRegex = try NSRegularExpression(pattern: #"=== TIMEOUT:"#)
         let hasTimeout = timeoutRegex.firstMatch(in: text, range: range) != nil
-        let concurrencyRegex = try NSRegularExpression(pattern: #"=== Another SCOUT session running"#)
         let hasConcurrencySkip = concurrencyRegex.firstMatch(in: text, range: range) != nil
-        let budgetRegex = try NSRegularExpression(pattern: #"=== Budget check: skipping this run ==="#)
         let hasBudgetSkip = budgetRegex.firstMatch(in: text, range: range) != nil
-        let rateLimitRegex = try NSRegularExpression(pattern: #"Rate limit detected"#)
         let hasRateLimit = rateLimitRegex.firstMatch(in: text, range: range) != nil
 
         let status: RunStatus
@@ -422,11 +421,17 @@ final class SessionLogService: ObservableObject {
 
     private func startWatching() {
         watchTask?.cancel()
+        // Session logs are appended continuously while a run executes; without
+        // coalescing, every FSEvent triggers a full re-parse and the main actor
+        // can fall permanently behind under heavy vault churn (issue #22).
+        // Subscribe synchronously — calling events(for:) inside the task left
+        // a window where events emitted before the task ran were dropped.
+        let events = DebouncedFileEvents(base: fileEvents, interval: .milliseconds(250))
+            .events(for: logsDirectory)
         watchTask = Task { [weak self] in
-            guard let self else { return }
-            for await event in self.fileEvents.events(for: self.logsDirectory) {
+            for await event in events {
                 if event.url.pathExtension == "log" {
-                    await self.reconcile(changedFile: event.url)
+                    await self?.reconcile(changedFile: event.url)
                 }
             }
         }
@@ -434,7 +439,13 @@ final class SessionLogService: ObservableObject {
 
     private func reconcile(changedFile url: URL) async {
         guard let filename = Self.parseFilename(url, timeZone: timeZone) else { return }
-        guard let body = try? Self.parseBody(at: url, filename: filename) else { return }
+        // parseBody does blocking file IO plus several regex scans; run it off
+        // the main actor so even a coalesced reconcile burst can't stall the UI
+        // thread (issue #22). The result hops back to the main actor on return.
+        let parseTask = Task.detached(priority: .utility) {
+            try? Self.parseBody(at: url, filename: filename)
+        }
+        guard let body = await parseTask.value else { return }
         let cost = trackerService.cost(
             matching: filename.type.costTrackerKey,
             near: filename.startedAt,
